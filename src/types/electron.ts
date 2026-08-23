@@ -2110,6 +2110,7 @@ declare global {
       transcribeAudioFileByok?: (
         options: {
           filePath: string;
+          requestId?: string;
           apiKey: string;
           baseUrl: string;
           model: string;
@@ -2531,7 +2532,8 @@ declare global {
         transcript?: string;
         diarizationSessionId?: string;
         error?: string;
-        reason?: "stale-session";
+        reason?: "stale-session" | "authorization-changed";
+        code?: "AUTHORIZATION_BOUNDARY_CHANGED";
       }>;
       meetingTranscriptionAbort?: (expectedSessionId?: string) => Promise<{
         success: boolean;

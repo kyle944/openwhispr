@@ -5,6 +5,11 @@ function createMeetingTranscriptionLifecycle({
   onAbortRequested = () => {},
   onError = () => {},
 }) {
+  const authorizationChangedResult = () => ({
+    success: false,
+    reason: "authorization-changed",
+    code: "AUTHORIZATION_BOUNDARY_CHANGED",
+  });
   let operationTail = Promise.resolve();
   const sessions = new Map();
 
@@ -47,14 +52,18 @@ function createMeetingTranscriptionLifecycle({
 
     session.stopRequested = true;
     session.state = "stopping";
-    session.stopPromise = enqueue(async () => {
+    const gracefulStop = enqueue(async () => {
       try {
-        if (!session.startSucceeded) return { success: true };
-        return await stop(session.sessionId);
+        if (!session.startSucceeded) {
+          return session.abortRequested ? authorizationChangedResult() : { success: true };
+        }
+        const result = await stop(session.sessionId, session.abortController.signal);
+        return session.abortRequested ? authorizationChangedResult() : result;
       } finally {
         removeSession(session);
       }
     });
+    session.stopPromise = Promise.race([gracefulStop, session.authorizationChanged]);
     return session.stopPromise;
   };
 
@@ -64,11 +73,18 @@ function createMeetingTranscriptionLifecycle({
       return Promise.resolve({ success: false, reason: "stale-session" });
     }
     if (session.abortPromise) return session.abortPromise;
-    if (session.stopPromise) return session.stopPromise;
 
     session.abortRequested = true;
     session.state = "aborting";
+    session.abortController.abort();
     onAbortRequested(session.sessionId);
+    session.resolveAuthorizationChanged(authorizationChangedResult());
+    if (session.stopPromise) {
+      session.abortPromise = Promise.resolve()
+        .then(() => abort(session.sessionId))
+        .finally(() => removeSession(session));
+      return session.abortPromise;
+    }
     session.abortPromise = enqueue(async () => {
       try {
         return await abort(session.sessionId);
@@ -87,6 +103,10 @@ function createMeetingTranscriptionLifecycle({
       return Promise.resolve({ success: false, error: "Operation in progress" });
     }
 
+    let resolveAuthorizationChanged;
+    const authorizationChanged = new Promise((resolve) => {
+      resolveAuthorizationChanged = resolve;
+    });
     const session = {
       sessionId,
       ownerWebContents,
@@ -94,6 +114,9 @@ function createMeetingTranscriptionLifecycle({
       startSucceeded: false,
       stopRequested: false,
       abortRequested: false,
+      abortController: new AbortController(),
+      authorizationChanged,
+      resolveAuthorizationChanged,
       stopPromise: null,
       abortPromise: null,
       ownerLossHandler: null,

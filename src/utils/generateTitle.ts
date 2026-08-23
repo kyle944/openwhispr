@@ -2,6 +2,7 @@ import reasoningService from "../services/ReasoningService";
 import type { ReasoningConfig } from "../services/BaseReasoningService";
 import { getSettings } from "../stores/settingsStore";
 import { sanitizeGeneratedTitle } from "./sanitizeGeneratedTitle";
+import { isRuntimeAuthorizationError } from "../helpers/runtimeAuthorizationBoundary";
 
 const TITLE_SYSTEM_PROMPT =
   "Generate a concise 3-8 word title for these notes. Return ONLY the title text, nothing else — no quotes, no prefix, no explanation.";
@@ -20,7 +21,8 @@ export async function generateNoteTitle(
       ...config,
     });
     return sanitizeGeneratedTitle(raw);
-  } catch {
+  } catch (error) {
+    if (isRuntimeAuthorizationError(error)) throw error;
     return "";
   }
 }

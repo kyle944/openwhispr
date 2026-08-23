@@ -63,6 +63,7 @@ import {
 } from "./managedLocalTranscriptionRuntime.ts";
 import {
   captureRuntimeAuthorizationGuard,
+  isRuntimeAuthorizationError,
   subscribeRuntimeAuthorizationBoundary,
 } from "./runtimeAuthorizationBoundary.ts";
 import { shouldSkipTranscriptionApiKey } from "./transcriptionAuth";
@@ -2415,7 +2416,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     return apiKey;
   }
 
-  async processWithReasoningModel(text, model, agentName, config) {
+  async processWithReasoningModel(text, model, agentName, config, wasCancelled = neverCancelled) {
     if (config?.requiresAgent) this.assertAgentAllowedByPolicy();
     logger.logReasoning("CALLING_REASONING_SERVICE", {
       model,
@@ -2455,7 +2456,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       // would drop the selection-edit instructions and completion marker.
       // rawScreenContext/selectionEditReachable are routing-only keys (see
       // processAgentCommand) — keep the retry config clean of them too.
-      if (config?.screenContext) {
+      if (config?.screenContext && !isRuntimeAuthorizationError(error)) {
+        if (wasCancelled()) throw cancelledOperationError();
         const {
           screenContext,
           rawScreenContext,
@@ -2622,7 +2624,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         userPrompt,
         model,
         agentName,
-        selectionConfig
+        selectionConfig,
+        wasCancelled
       );
       if (wasCancelled()) return text;
       const replacement = extractSelectionEditReplacement(result, completionMarker);
@@ -2711,10 +2714,21 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
 
   // Cleanup-then-translate chain shared by batch, cloud, and streaming paths: Step 1
   // (optional cleanup) soft-fails to input; Step 2 translates unless source === target.
-  async runTranslationChain({ text, settings, agentName, route, cleanup }) {
+  async runTranslationChain({
+    text,
+    settings,
+    agentName,
+    route,
+    cleanup,
+    wasCancelled = neverCancelled,
+  }) {
+    const assertOperationCurrent = () => {
+      if (wasCancelled()) throw cancelledOperationError();
+    };
     const runCleanup = async (currentText) => {
       if (cleanup.mode === "cloudReason") {
         const reasonResult = await withSessionRefresh(async () => {
+          assertOperationCurrent();
           const res = await window.electronAPI.cloudReason(currentText, {
             agentName,
             promptMode: "cleanup",
@@ -2739,27 +2753,41 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
           currentText,
           cleanupModel,
           agentName,
-          route.cleanupConfig
+          route.cleanupConfig,
+          wasCancelled
         );
       }
       return null;
     };
 
     const runTranslate = async (currentText) =>
-      this.processWithReasoningModel(currentText, route.model, agentName, route.config);
+      this.processWithReasoningModel(
+        currentText,
+        route.model,
+        agentName,
+        route.config,
+        wasCancelled
+      );
 
     try {
       const chainResult = await executeTranslationChain({
         text,
         cleanupReachable: route.cleanupReachable,
         cleanupIsCloud: cleanup.mode === "cloudReason",
-        runCleanup,
-        runTranslate,
+        runCleanup: async (currentText) => {
+          assertOperationCurrent();
+          return runCleanup(currentText);
+        },
+        runTranslate: async (currentText) => {
+          assertOperationCurrent();
+          return runTranslate(currentText);
+        },
         shouldTranslate: shouldRunTranslateStep(
           settings.translationSourceLanguage,
           settings.translationTargetLanguage
         ),
         translateIsCloud: route.config?.provider === "openwhispr",
+        isFatalError: isRuntimeAuthorizationError,
         onCleanupError: (cleanupError) => {
           const { level = "error", channel, extra } = cleanup.log || {};
           logger[level](
@@ -2876,6 +2904,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
               model: cleanupModel,
               log: { level: "warn", channel: "notes", extra: { source } },
             },
+            wasCancelled,
           });
 
           logger.logReasoning("REASONING_SUCCESS", {
@@ -2915,7 +2944,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
                 normalizedText,
                 targetModel,
                 agentName,
-                reasoningConfig
+                reasoningConfig,
+                wasCancelled
               );
 
         logger.logReasoning("REASONING_SUCCESS", {
@@ -3237,7 +3267,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
               processedText,
               effectiveModel,
               agentName,
-              route.config
+              route.config,
+              wasCancelled
             );
             if (hasTextContent(reasoned)) processedText = reasoned;
           }
@@ -3269,6 +3300,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
                     model: getEffectiveCleanupModel(),
                     log: { level: "error", channel: "transcription" },
                   },
+            wasCancelled,
           });
           processedText = resolveTranslatedText(processedText, chainResult);
         }
@@ -4931,7 +4963,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
               finalText,
               effectiveModel,
               agentName,
-              route.config
+              route.config,
+              wasCancelled
             );
             if (hasTextContent(reasoned)) finalText = reasoned;
             logger.info(
@@ -4970,6 +5003,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
                     model: getEffectiveCleanupModel(),
                     log: { level: "error", channel: "streaming" },
                   },
+            wasCancelled,
           });
           finalText = resolveTranslatedText(finalText, chainResult);
           usedCloudReasoning = chainResult.usedCloudReasoning || usedCloudReasoning;

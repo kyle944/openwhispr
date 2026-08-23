@@ -127,6 +127,36 @@ test("the text-only retry swaps in the pre-built prompt verbatim", async (t) => 
   assert.deepEqual(prompts, ["BASE PROMPT WITH SUFFIX", "BASE PROMPT"]);
 });
 
+test("an authorization abort from a screenshot request never retries text-only", async (t) => {
+  const { setProcessText, createManager } = await loadAudioManager(t, {
+    cachePrefix: "openwhispr-sc-retry-authorization-test-",
+    settingsKey: "__scRetryAuthorizationSettings",
+    reasoningKey: "__scRetryAuthorizationProcessText",
+  });
+  const boundaryError = Object.assign(new Error("Authorization changed"), {
+    code: "AUTHORIZATION_BOUNDARY_CHANGED",
+    name: "AbortError",
+  });
+  let dispatches = 0;
+  setProcessText(async () => {
+    dispatches += 1;
+    throw boundaryError;
+  });
+
+  const manager = createManager({ onError: () => {} });
+
+  await assert.rejects(
+    () =>
+      manager.processWithReasoningModel("hello", "gpt-5", "Agent", {
+        systemPrompt: "BASE PROMPT WITH SUFFIX",
+        textOnlySystemPrompt: "BASE PROMPT",
+        screenContext: { mediaType: "image/jpeg", data: "x" },
+      }),
+    { code: "AUTHORIZATION_BOUNDARY_CHANGED" }
+  );
+  assert.equal(dispatches, 1);
+});
+
 test("a non-voice-agent recording clears a stale screen capture", async (t) => {
   const { createManager } = await loadAudioManager(t, {
     cachePrefix: "openwhispr-sc-stale-test-",

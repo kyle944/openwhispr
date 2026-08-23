@@ -52,6 +52,8 @@ import {
 import { persistFinalTranscriptAroundStop } from "../helpers/meetingTranscriptPersistence";
 import {
   captureRuntimeAuthorizationGuard,
+  captureRuntimeAuthorizationLease,
+  isRuntimeAuthorizationError,
   subscribeRuntimeAuthorizationBoundary,
 } from "../helpers/runtimeAuthorizationBoundary";
 
@@ -728,6 +730,9 @@ function abortForAuthorizationBoundary(): Promise<void> {
 
   const abort = (async () => {
     const sessionId = activeRecordingSessionId ?? undefined;
+    const mainAbort = sessionId
+      ? window.electronAPI?.meetingTranscriptionAbort?.(sessionId)
+      : window.electronAPI?.meetingTranscriptionCancel?.();
     const canceledStart = meetingRecordingStartCoordinator.cancelActiveStart(sessionId);
     activeRecordingSessionId = null;
     isPrepared = false;
@@ -742,8 +747,7 @@ function abortForAuthorizationBoundary(): Promise<void> {
       systemPartialSpeakerName: null,
       currentMicLevel: 0,
     });
-    const mainAbort = window.electronAPI?.meetingTranscriptionAbort?.(sessionId);
-    const cleanupAbort = meetingRecordingStopBarrier.runStop(async () => {
+    const cleanupAbort = meetingRecordingStopBarrier.runAbort(async () => {
       await Promise.all([
         cleanup({ flushProcessors: false }),
         mainAbort?.catch(() => undefined) ?? Promise.resolve(),
@@ -1572,64 +1576,87 @@ export async function stopRecording(expectedSessionId?: string): Promise<StopRec
       return { diarizationSessionId: null };
     }
 
-    const sessionId = activeRecordingSessionId;
-    activeRecordingSessionId = null;
-    isRecordingFlag = false;
-    isStartingFlag = false;
-    useMeetingRecordingStore.setState({ isRecording: false, isTranscribing: false });
+    const authorization = captureRuntimeAuthorizationLease("transcription", () => {
+      void abortForAuthorizationBoundary().catch(() => undefined);
+    });
+    let diarizationSessionId: string | null = null;
+    let sessionId: string | null = null;
+    try {
+      sessionId = activeRecordingSessionId;
+      isRecordingFlag = false;
+      isStartingFlag = false;
+      useMeetingRecordingStore.setState({ isRecording: false, isTranscribing: false });
 
-    // Persist here, not in a notes-view effect: an auto-end stop can fire while
-    // that view is unmounted, and any view-scoped saver dies with it. (Delayed
-    // diarization results are persisted by the module-level listener below.)
-    const { recordingNoteId, segments: finalSegments } = useMeetingRecordingStore.getState();
-    const persistTranscript = async (transcript: string) => {
-      if (recordingNoteId == null) return;
-      try {
-        await window.electronAPI?.updateNote?.(recordingNoteId, { transcript });
-      } catch (err) {
-        logger.error(
-          "Failed to persist final meeting transcript",
-          { error: (err as Error).message, noteId: recordingNoteId },
-          "meeting"
-        );
-      }
-    };
-
-    const diarizationSessionId = await persistFinalTranscriptAroundStop({
-      segments: finalSegments,
-      serializeSegments: serializeTranscriptSegments,
-      persist: persistTranscript,
-      fallbackTranscript: () => useMeetingRecordingStore.getState().transcript,
-      stop: async () => {
-        await cleanup();
-
-        let stoppedDiarizationSessionId: string | null = null;
+      const { recordingNoteId, segments: finalSegments } = useMeetingRecordingStore.getState();
+      const persistTranscript = async (transcript: string) => {
+        if (recordingNoteId == null) return;
         try {
-          const result = await window.electronAPI?.meetingTranscriptionStop?.(
-            sessionId ?? undefined
-          );
-          if (result?.diarizationSessionId) {
-            stoppedDiarizationSessionId = result.diarizationSessionId;
-            useMeetingRecordingStore.setState({
-              diarizationSessionId: stoppedDiarizationSessionId,
-            });
-          }
-          if (result?.success && result.transcript) {
-            useMeetingRecordingStore.setState({ transcript: result.transcript });
-          } else if (result?.error) {
-            reportMeetingError(result.error);
-          }
+          authorization.assertCurrent();
+          await window.electronAPI?.updateNote?.(recordingNoteId, { transcript });
         } catch (err) {
-          reportMeetingError((err as Error).message);
+          if (isRuntimeAuthorizationError(err)) throw err;
           logger.error(
-            "Meeting transcription stop failed",
-            { error: (err as Error).message },
+            "Failed to persist final meeting transcript",
+            { error: (err as Error).message, noteId: recordingNoteId },
             "meeting"
           );
         }
-        return stoppedDiarizationSessionId;
-      },
-    });
+      };
+
+      diarizationSessionId = await persistFinalTranscriptAroundStop({
+        // Delay both segment and fallback persistence until main confirms the
+        // graceful stop is still authorized.
+        segments: [],
+        serializeSegments: serializeTranscriptSegments,
+        persist: persistTranscript,
+        fallbackTranscript: () =>
+          finalSegments.length > 0
+            ? serializeTranscriptSegments(finalSegments)
+            : useMeetingRecordingStore.getState().transcript,
+        stop: async () => {
+          await cleanup();
+
+          let stoppedDiarizationSessionId: string | null = null;
+          try {
+            const result = await window.electronAPI?.meetingTranscriptionStop?.(
+              sessionId ?? undefined
+            );
+            authorization.assertCurrent();
+            if (result?.code === "AUTHORIZATION_BOUNDARY_CHANGED") {
+              throw Object.assign(new Error(result.error || "Authorization changed"), {
+                name: "AbortError",
+                code: result.code,
+              });
+            }
+            if (result?.diarizationSessionId) {
+              stoppedDiarizationSessionId = result.diarizationSessionId;
+              useMeetingRecordingStore.setState({
+                diarizationSessionId: stoppedDiarizationSessionId,
+              });
+            }
+            if (result?.success && result.transcript) {
+              useMeetingRecordingStore.setState({ transcript: result.transcript });
+            } else if (result?.error) {
+              reportMeetingError(result.error);
+            }
+          } catch (err) {
+            if (isRuntimeAuthorizationError(err)) throw err;
+            reportMeetingError((err as Error).message);
+            logger.error(
+              "Meeting transcription stop failed",
+              { error: (err as Error).message },
+              "meeting"
+            );
+          }
+          return stoppedDiarizationSessionId;
+        },
+      });
+    } catch (error) {
+      if (!isRuntimeAuthorizationError(error)) throw error;
+    } finally {
+      if (activeRecordingSessionId === sessionId) activeRecordingSessionId = null;
+      authorization.dispose();
+    }
 
     useMeetingRecordingStore.setState({
       micPartial: "",

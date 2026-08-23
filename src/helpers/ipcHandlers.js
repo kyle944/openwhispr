@@ -7082,9 +7082,9 @@ class IPCHandlers {
       return started;
     };
 
-    const transcribeLocalMeetingChunk = async (source) => {
+    const transcribeLocalMeetingChunk = async (source, signal = null) => {
       const generation = meetingTransportGeneration;
-      if (meetingSessionTransportGeneration !== generation) return;
+      if (signal?.aborted || meetingSessionTransportGeneration !== generation) return;
       const chunks = meetingLocalBuffers[source];
       if (!chunks.length) return;
 
@@ -7124,6 +7124,7 @@ class IPCHandlers {
         if (meetingLocalProvider === "nvidia") {
           result = await this.parakeetManager.transcribeLocalParakeet(wav, {
             model: meetingLocalModel,
+            signal,
           });
         } else {
           const vadOptions = this._resolveWhisperVadOptions("meeting");
@@ -7131,10 +7132,12 @@ class IPCHandlers {
             model: meetingLocalModel,
             language: meetingLocalLanguage,
             ...vadOptions,
+            signal,
           });
         }
 
         if (
+          signal?.aborted ||
           generation !== meetingTransportGeneration ||
           meetingSessionTransportGeneration !== generation
         ) {
@@ -7266,12 +7269,14 @@ class IPCHandlers {
       }
     };
 
-    const transcribeAllLocalBuffers = async () => {
-      if (meetingLocalTranscribing) return;
+    const transcribeAllLocalBuffers = async (signal = null) => {
+      if (signal?.aborted || meetingLocalTranscribing) return;
       meetingLocalTranscribing = true;
       try {
-        await transcribeLocalMeetingChunk("system");
-        await transcribeLocalMeetingChunk("mic");
+        await transcribeLocalMeetingChunk("system", signal);
+        if (!signal?.aborted) {
+          await transcribeLocalMeetingChunk("mic", signal);
+        }
       } finally {
         meetingLocalTranscribing = false;
       }
@@ -7328,6 +7333,7 @@ class IPCHandlers {
       meetingPendingMicChunks = [];
       resetPendingMicFinals();
       meetingAecEnabled = false;
+      meetingSessionTransportGeneration = null;
       meetingStartedAt = null;
       meetingEchoLeakDetector.reset();
     };
@@ -7478,9 +7484,9 @@ class IPCHandlers {
       resetMeetingReconnectAudio();
     };
 
-    const disconnectMeetingStreaming = async ({ flushPending = false } = {}) => {
+    const disconnectMeetingStreaming = async ({ flushPending = false, signal = null } = {}) => {
       const provider = meetingConnectionProvider || meetingConnectionOptions?.provider;
-      const results = await Promise.all([
+      const disconnectPromise = Promise.all([
         disconnectMeetingStreamingClient(this._meetingMicStreaming, provider, flushPending).catch(
           () => ({ text: "" })
         ),
@@ -7490,6 +7496,26 @@ class IPCHandlers {
           flushPending
         ).catch(() => ({ text: "" })),
       ]);
+      if (signal) {
+        if (signal.aborted) return [{ text: "" }, { text: "" }];
+
+        let abortListener = null;
+        const results = await Promise.race([
+          disconnectPromise,
+          new Promise((resolve) => {
+            abortListener = () => resolve(null);
+            signal.addEventListener("abort", abortListener, { once: true });
+          }),
+        ]);
+        if (abortListener) signal.removeEventListener("abort", abortListener);
+        if (!results) return [{ text: "" }, { text: "" }];
+
+        if (flushPending) flushPendingMicFinals(true);
+        resetMeetingStreamingState();
+        return results;
+      }
+
+      const results = await disconnectPromise;
 
       if (flushPending) {
         flushPendingMicFinals(true);
@@ -7699,7 +7725,7 @@ class IPCHandlers {
       }
 
       meetingTranscriptionPrepareInProgress = true;
-      meetingTranscriptionPreparePromise = (async () => {
+      const preparePromise = (async () => {
         let timeoutHandle;
         try {
           await Promise.race([
@@ -7716,21 +7742,39 @@ class IPCHandlers {
           return toPolicyFailure(error);
         } finally {
           if (timeoutHandle) clearTimeout(timeoutHandle);
-          meetingTranscriptionPrepareInProgress = false;
-          meetingTranscriptionPreparePromise = null;
+          if (meetingTranscriptionPreparePromise === preparePromise) {
+            meetingTranscriptionPrepareInProgress = false;
+            meetingTranscriptionPreparePromise = null;
+          }
         }
       })();
+      meetingTranscriptionPreparePromise = preparePromise;
 
-      return meetingTranscriptionPreparePromise;
+      return preparePromise;
     });
 
     ipcMain.handle("meeting-transcription-cancel", async () => {
-      if (isMeetingStreamingConnected() || meetingLocalTimer) {
+      const hasActiveSession =
+        meetingSessionTransportGeneration === meetingTransportGeneration || meetingLocalTimer;
+      if (hasActiveSession) {
         return { success: false, reason: "recording-active" };
       }
-      meetingTranscriptionPrepareInProgress = false;
+
+      const pendingPrepare = meetingTranscriptionPreparePromise;
+      invalidateMeetingTranscriptionTransport();
+      if (meetingTranscriptionPreparePromise === pendingPrepare) {
+        meetingTranscriptionPrepareInProgress = false;
+        meetingTranscriptionPreparePromise = null;
+      }
       meetingTranscriptionStartInProgress = false;
-      meetingTranscriptionPreparePromise = null;
+      if (pendingPrepare) {
+        void pendingPrepare.catch((error) => {
+          debugLogger.debug("Cancelled meeting prepare settled with an error", {
+            error: error.message,
+          });
+        });
+      }
+      await disconnectMeetingStreaming({ flushPending: false });
       return { success: true };
     });
 
@@ -8113,7 +8157,20 @@ class IPCHandlers {
       sendMeetingAudio(audioBuffer, source);
     });
 
-    const stopMeetingTranscription = async (expectedSessionId) => {
+    const stopMeetingTranscription = async (expectedSessionId, abortSignal = null) => {
+      const authorizationChangedResult = () => ({
+        success: false,
+        reason: "authorization-changed",
+        code: "AUTHORIZATION_BOUNDARY_CHANGED",
+      });
+      const discardCapturedDiarization = (capturedDiarization) => {
+        if (capturedDiarization?.diarizationPcmPath) {
+          fs.unlink(capturedDiarization.diarizationPcmPath, () => {});
+        }
+        return authorizationChangedResult();
+      };
+      if (abortSignal?.aborted) return authorizationChangedResult();
+
       // Only a *different* live session blocks teardown — it owns the shared
       // capture now. With no engine session (e.g. after quit-path engine stop)
       // the streams below must still be torn down.
@@ -8132,10 +8189,12 @@ class IPCHandlers {
           await this.windowsLoopbackAudioManager.stop().catch(() => {});
         }
 
+        if (abortSignal?.aborted) return authorizationChangedResult();
         flushPendingMeetingMicChunks(true);
         await stopMeetingAec();
 
         const liveSpeakerState = await stopLiveSpeakerIdentification().catch(() => null);
+        if (abortSignal?.aborted) return authorizationChangedResult();
 
         const diarizationSessionId = `diar-${Date.now()}`;
         const diarizationWin = meetingLocalWin || this.windowManager.controlPanelWindow;
@@ -8146,13 +8205,17 @@ class IPCHandlers {
             meetingLocalTimer = null;
           }
           try {
-            await transcribeAllLocalBuffers();
+            await transcribeAllLocalBuffers(abortSignal);
           } catch (err) {
             debugLogger.error("Local meeting final transcription failed", { error: err.message });
           }
+          if (abortSignal?.aborted) return authorizationChangedResult();
           flushPendingMicFinals(true);
+          if (abortSignal?.aborted) return authorizationChangedResult();
+          const capturedDiarization = await captureMeetingDiarizationState();
+          if (abortSignal?.aborted) return discardCapturedDiarization(capturedDiarization);
           const { diarizationPcmPath, diarizationSegments, diarizationStartedAt, diarizedSource } =
-            await captureMeetingDiarizationState();
+            capturedDiarization;
           const transcript =
             buildOrderedTranscriptText(diarizationSegments) || meetingLocalTranscript;
           const sessionSpeakerConfigSnapshot = this.activeMeetingSpeakerConfig;
@@ -8161,6 +8224,7 @@ class IPCHandlers {
           resetMeetingLocalState();
 
           // Fire-and-forget background diarization (or notify skip)
+          if (abortSignal?.aborted) return discardCapturedDiarization(capturedDiarization);
           this._startOrSkipDiarization(
             diarizationSessionId,
             diarizationPcmPath,
@@ -8176,9 +8240,16 @@ class IPCHandlers {
           return { success: true, transcript, diarizationSessionId };
         }
 
-        const results = await disconnectMeetingStreaming({ flushPending: true });
+        if (abortSignal?.aborted) return authorizationChangedResult();
+        const results = await disconnectMeetingStreaming({
+          flushPending: true,
+          signal: abortSignal,
+        });
+        if (abortSignal?.aborted) return authorizationChangedResult();
+        const capturedDiarization = await captureMeetingDiarizationState();
+        if (abortSignal?.aborted) return discardCapturedDiarization(capturedDiarization);
         const { diarizationPcmPath, diarizationSegments, diarizationStartedAt, diarizedSource } =
-          await captureMeetingDiarizationState();
+          capturedDiarization;
         const transcript =
           buildOrderedTranscriptText(diarizationSegments) ||
           [results[0]?.text, results[1]?.text].filter(Boolean).join(" ");
@@ -8188,6 +8259,7 @@ class IPCHandlers {
         this.activeMeetingSpeakerConfig = null;
 
         // Fire-and-forget background diarization (or notify skip)
+        if (abortSignal?.aborted) return discardCapturedDiarization(capturedDiarization);
         this._startOrSkipDiarization(
           diarizationSessionId,
           diarizationPcmPath,
@@ -8202,6 +8274,7 @@ class IPCHandlers {
 
         return { success: true, transcript, diarizationSessionId };
       } catch (error) {
+        if (abortSignal?.aborted) return authorizationChangedResult();
         debugLogger.error("Meeting transcription stop error", { error: error.message });
         return { success: false, error: error.message };
       }
@@ -8210,7 +8283,7 @@ class IPCHandlers {
     const meetingTranscriptionLifecycle = createMeetingTranscriptionLifecycle({
       start: ({ sessionId, ownerWebContents, options }) =>
         startMeetingTranscription({ sender: ownerWebContents }, { ...options, sessionId }),
-      stop: (sessionId) => stopMeetingTranscription(sessionId),
+      stop: (sessionId, signal) => stopMeetingTranscription(sessionId, signal),
       abort: (sessionId) => abortMeetingTranscription(sessionId),
       onAbortRequested: invalidateMeetingTranscriptionTransport,
       onError: (error, sessionId) => {
@@ -9157,8 +9230,8 @@ class IPCHandlers {
       }
     });
 
-    // Unknown ids are a no-op: BYOK providers don't register a controller,
-    // and the renderer fires this for every cancel.
+    // Unknown and already-finished ids are a no-op; the renderer fires this
+    // for every cancel regardless of which upload route handled the request.
     ipcMain.handle("cancel-upload-transcription", async (event, requestId) => {
       const activeCancelled = this._uploadCancelRegistry.cancel(requestId) > 0;
       const pendingDiscarded = discardPendingRetryTranscription(
@@ -9174,6 +9247,7 @@ class IPCHandlers {
         event,
         {
           filePath,
+          requestId,
           apiKey,
           baseUrl,
           model,
@@ -9190,7 +9264,15 @@ class IPCHandlers {
         context
       ) => {
         const fs = require("fs");
+        const { signal, release } = this._uploadCancelRegistry.register(requestId);
+        const assertUploadCurrent = () => {
+          if (!signal?.aborted) return;
+          const error = new Error("Upload transcription cancelled");
+          error.name = "AbortError";
+          throw error;
+        };
         try {
+          assertUploadCurrent();
           const { resolveTranscriptionRoute } = await import("./transcriptionRoute.ts");
           const route = resolveTranscriptionRoute({
             settings: {
@@ -9213,6 +9295,7 @@ class IPCHandlers {
           }
 
           await authorizeTranscriptionStart(event, context, route.provider, route.model);
+          assertUploadCurrent();
 
           if (typeof filePath !== "string") {
             return { success: false, error: "Invalid file path" };
@@ -9229,7 +9312,14 @@ class IPCHandlers {
               AUDIO_MIME_TYPES[ext] || "audio/mpeg",
               { model: route.model, language: route.language }
             );
-            const data = await postMultipart(new URL(route.endpoint), body, boundary);
+            const data = await postMultipart(
+              new URL(route.endpoint),
+              body,
+              boundary,
+              {},
+              { signal }
+            );
+            assertUploadCurrent();
             if (data.statusCode !== 200) {
               throw new Error(
                 data.data?.error?.message ||
@@ -9262,7 +9352,9 @@ class IPCHandlers {
               clientSecret,
               audioBuffer: fs.readFileSync(realByok),
               language: route.language,
+              signal,
             });
+            assertUploadCurrent();
             return { success: true, text };
           }
 
@@ -9274,7 +9366,9 @@ class IPCHandlers {
               contentType: AUDIO_MIME_TYPES[ext] || "audio/mpeg",
               language: route.language,
               apiKey: this.environmentManager.getTinfoilKey(),
+              signal,
             });
+            assertUploadCurrent();
             return { success: true, text };
           }
 
@@ -9350,7 +9444,8 @@ class IPCHandlers {
                 ? { "api-key": apiKey }
                 : { Authorization: `Bearer ${apiKey}` }
             : undefined;
-          const data = await postMultipart(url, body, boundary, headers);
+          const data = await postMultipart(url, body, boundary, headers, { signal });
+          assertUploadCurrent();
 
           if (data.statusCode === 401) {
             return { success: false, error: "Invalid API key. Check your key in Settings." };
@@ -9402,8 +9497,14 @@ class IPCHandlers {
           const segments = timestamps ? mapVerboseSegments(data.data) : null;
           return { success: true, text: data.data.text, ...(segments ? { segments } : {}) };
         } catch (error) {
+          if (signal?.aborted) {
+            debugLogger.debug("BYOK audio file transcription cancelled", { requestId });
+            return { success: false, error: "Cancelled", code: "UPLOAD_CANCELLED" };
+          }
           debugLogger.error("BYOK audio file transcription error", { error: error.message });
           return { success: false, error: error.message, code: error.code };
+        } finally {
+          release();
         }
       }
     );

@@ -63,6 +63,7 @@ const cortiCalls = [];
 const tinfoilCalls = [];
 const admissionDispatches = [];
 let cortiBehavior = async () => ({ text: "corti text" });
+let tinfoilBehavior = async () => ({ text: "tinfoil text", model: "tinfoil-model" });
 let tokenState = { token: null, generation: 0 };
 let enterpriseConfigResult = null;
 let enterpriseConfigBehavior = async () => enterpriseConfigResult;
@@ -153,7 +154,7 @@ Module._load = function loadWithMocks(request, parent, isMain) {
       return {
         transcribeWithTinfoil: async (opts) => {
           tinfoilCalls.push(opts);
-          return { text: "tinfoil text", model: "tinfoil-model" };
+          return tinfoilBehavior(opts);
         },
         getTinfoilChatModels: () => [],
       };
@@ -257,6 +258,8 @@ test.beforeEach(() => {
   tokenState = { token: null, generation: 0 };
   enterpriseConfigResult = null;
   enterpriseConfigBehavior = async () => enterpriseConfigResult;
+  cortiBehavior = async () => ({ text: "corti text" });
+  tinfoilBehavior = async () => ({ text: "tinfoil text", model: "tinfoil-model" });
 });
 
 const invoke = (settings, id = 7, requestId) =>
@@ -913,6 +916,134 @@ test("upload: openai diarization fields ride the route, Bearer auth", async () =
   const body = fetches[0].init.body.toString();
   assert.match(body, /gpt-4o-transcribe-diarize/);
   assert.match(body, /diarized_json/);
+});
+
+for (const networkCase of [
+  {
+    name: "multipart",
+    payload: {
+      apiKey: "sk-openai",
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-4o-mini-transcribe",
+      provider: "openai",
+      transcriptionMode: "providers",
+    },
+    install(started) {
+      fetchResponse = (_url, init) => {
+        started.resolve(init.signal);
+        if (!init.signal) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ text: "late text" }),
+            text: async () => JSON.stringify({ text: "late text" }),
+          };
+        }
+        return new Promise((_resolve, reject) => {
+          init.signal.addEventListener("abort", () => {
+            const error = new Error("aborted");
+            error.name = "AbortError";
+            reject(error);
+          });
+        });
+      };
+    },
+  },
+  {
+    name: "Tinfoil",
+    payload: {
+      apiKey: "tk-tinfoil",
+      baseUrl: "",
+      model: "whisper-1",
+      provider: "tinfoil",
+      transcriptionMode: "providers",
+    },
+    install(started) {
+      tinfoilBehavior = async ({ signal }) => {
+        started.resolve(signal);
+        if (!signal) return { text: "late text", model: "tinfoil-model" };
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            const error = new Error("aborted");
+            error.name = "AbortError";
+            reject(error);
+          });
+        });
+      };
+    },
+  },
+  {
+    name: "Corti",
+    payload: {
+      apiKey: "",
+      baseUrl: "",
+      model: "corti-transcribe",
+      provider: "corti",
+      environment: "eu",
+      tenant: "tenant-a",
+      transcriptionMode: "providers",
+    },
+    install(started) {
+      cortiBehavior = async ({ signal }) => {
+        started.resolve(signal);
+        if (!signal) return { text: "late text" };
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            const error = new Error("aborted");
+            error.name = "AbortError";
+            reject(error);
+          });
+        });
+      };
+    },
+  },
+]) {
+  test(`upload cancellation aborts ${networkCase.name} work and normalizes its result`, async () => {
+    const requestId = `cancel-${networkCase.name.toLowerCase()}`;
+    const started = createDeferred();
+    networkCase.install(started);
+
+    const upload = invokeUpload({ ...networkCase.payload, requestId });
+    const signal = await started.promise;
+    const cancellation = await handlers.get("cancel-upload-transcription")(
+      { sender: { id: 1 } },
+      requestId
+    );
+    const result = await upload;
+
+    assert.equal(signal?.aborted, true);
+    assert.deepEqual(cancellation, { success: true });
+    assert.equal(result.success, false);
+    assert.equal(result.code, "UPLOAD_CANCELLED");
+  });
+}
+
+test("upload cancellation discards a network helper result that wins the abort race", async () => {
+  const started = createDeferred();
+  const completion = createDeferred();
+  cortiBehavior = async ({ signal }) => {
+    started.resolve(signal);
+    await completion.promise;
+    return { text: "late text" };
+  };
+
+  const requestId = "cancel-late-corti";
+  const upload = invokeUpload({
+    apiKey: "",
+    baseUrl: "",
+    model: "corti-transcribe",
+    provider: "corti",
+    environment: "eu",
+    tenant: "tenant-a",
+    transcriptionMode: "providers",
+    requestId,
+  });
+  const signal = await started.promise;
+  await handlers.get("cancel-upload-transcription")({ sender: { id: 1 } }, requestId);
+  completion.resolve();
+
+  assert.equal(signal.aborted, true);
+  assert.equal((await upload).code, "UPLOAD_CANCELLED");
 });
 
 test("upload: sentinel custom URL fails closed before any request", async () => {

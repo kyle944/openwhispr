@@ -11,6 +11,8 @@ function makeOpts(overrides = {}) {
     cleanupIsCloud: false,
     shouldTranslate: true,
     translateIsCloud: false,
+    isFatalError: (error) =>
+      error?.name === "AbortError" || error?.code === "AUTHORIZATION_BOUNDARY_CHANGED",
     runCleanup: async () => null,
     runTranslate: async () => null,
     onCleanupError: () => {},
@@ -79,6 +81,32 @@ test("cleanup throws: onCleanupError fires, translate runs on original text", as
 
   assert.deepEqual(errors, ["cleanup boom"]);
   assert.equal(result.text, "translated(raw)");
+});
+
+test("an authorization abort in cleanup never reaches translation", async () => {
+  const { executeTranslationChain } = await load();
+  const boundaryError = Object.assign(new Error("Authorization changed"), {
+    code: "AUTHORIZATION_BOUNDARY_CHANGED",
+    name: "AbortError",
+  });
+  let translated = false;
+
+  await assert.rejects(
+    () =>
+      executeTranslationChain(
+        makeOpts({
+          runCleanup: async () => {
+            throw boundaryError;
+          },
+          runTranslate: async () => {
+            translated = true;
+            return "translated";
+          },
+        })
+      ),
+    { code: "AUTHORIZATION_BOUNDARY_CHANGED" }
+  );
+  assert.equal(translated, false);
 });
 
 test("cleanup returns whitespace-only: text unchanged, translate still runs", async () => {

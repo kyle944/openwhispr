@@ -111,11 +111,13 @@ test("self-hosted file transcription bypasses stale Custom endpoint validation",
       remoteTranscriptionUrl: "http://192.168.1.20:9000/v1",
       remoteTranscriptionModel: "whisper-large-v3",
     },
-    false
+    false,
+    { requestId: "self-hosted-upload-1" }
   );
 
   assert.equal(result.success, true);
   assert.equal(receivedOptions.transcriptionMode, "self-hosted");
   assert.equal(receivedOptions.remoteTranscriptionUrl, "http://192.168.1.20:9000/v1");
   assert.equal(receivedOptions.remoteTranscriptionModel, "whisper-large-v3");
+  assert.equal(receivedOptions.requestId, "self-hosted-upload-1");
 });

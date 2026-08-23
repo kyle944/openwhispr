@@ -17,6 +17,11 @@ export interface RuntimeAuthorizationSnapshot {
     authGeneration: number | null;
     configGeneration: number | null;
   };
+  enterprise: {
+    status: "idle" | "loading" | "ready" | "error";
+    failClosed: boolean;
+    managedInferenceConfigured: boolean | null;
+  };
   managedLock: {
     managed: boolean;
     selection: ManagedEnterpriseLocalModelSelection | null;
@@ -42,6 +47,16 @@ export class RuntimeAuthorizationBoundaryError extends Error {
     super("Authorization changed while the operation was active");
     this.name = "AbortError";
   }
+}
+
+export function isRuntimeAuthorizationError(error: unknown): boolean {
+  const candidate = error as { code?: string; name?: string; status?: number } | null | undefined;
+  return (
+    candidate?.name === "AbortError" ||
+    candidate?.status === 499 ||
+    candidate?.code === "AUTHORIZATION_BOUNDARY_CHANGED" ||
+    candidate?.code === "REASON_CANCELLED"
+  );
 }
 
 const sorted = (values: readonly string[]): string[] => [...values].sort();
@@ -84,6 +99,7 @@ export function buildRuntimeAuthorizationSignature(
   return JSON.stringify({
     domain,
     identity: snapshot.identity,
+    ...(domain === "reasoning" ? { enterprise: snapshot.enterprise } : {}),
     managedLock: {
       managed: snapshot.managedLock.managed,
       provider: snapshot.managedLock.selection?.provider ?? null,
@@ -102,6 +118,11 @@ export function getRuntimeAuthorizationSignature(domain: RuntimeAuthorizationDom
       workspaceId: enterprise.workspaceId,
       authGeneration: enterprise.authGeneration,
       configGeneration: enterprise.config?.generation ?? null,
+    },
+    enterprise: {
+      status: enterprise.status,
+      failClosed: enterprise.failClosed,
+      managedInferenceConfigured: enterprise.lastKnownManagedInferenceConfigured,
     },
     managedLock: getManagedLocalModelRuntimeLock(domain),
     policy,

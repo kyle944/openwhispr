@@ -160,6 +160,7 @@ export async function transcribeFile(
   return window.electronAPI.transcribeAudioFileByok!(
     {
       filePath,
+      requestId: opts.requestId,
       apiKey: cfg.getApiKey(),
       baseUrl: cfg.cloudTranscriptionBaseUrl,
       model: cfg.cloudTranscriptionModel,

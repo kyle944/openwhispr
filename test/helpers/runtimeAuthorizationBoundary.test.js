@@ -50,12 +50,40 @@ const baseSnapshot = {
     authGeneration: 1,
     configGeneration: 4,
   },
+  enterprise: {
+    status: "ready",
+    failClosed: true,
+    managedInferenceConfigured: true,
+  },
   managedLock: {
     managed: true,
     selection: { provider: "qwen", modelId: "qwen3.5-4b-q4_k_m" },
   },
   policy: managedPolicy,
 };
+
+test("reasoning authorization changes with enterprise inference readiness", async () => {
+  const { buildRuntimeAuthorizationSignature } = await load();
+  const initial = buildRuntimeAuthorizationSignature("reasoning", baseSnapshot);
+  const transcription = buildRuntimeAuthorizationSignature("transcription", baseSnapshot);
+
+  for (const enterprise of [
+    { ...baseSnapshot.enterprise, status: "loading" },
+    { ...baseSnapshot.enterprise, failClosed: false },
+    { ...baseSnapshot.enterprise, managedInferenceConfigured: false },
+    { ...baseSnapshot.enterprise, managedInferenceConfigured: null },
+  ]) {
+    assert.notEqual(
+      buildRuntimeAuthorizationSignature("reasoning", { ...baseSnapshot, enterprise }),
+      initial
+    );
+    assert.equal(
+      buildRuntimeAuthorizationSignature("transcription", { ...baseSnapshot, enterprise }),
+      transcription,
+      "reasoning readiness must not cancel unrelated transcription work"
+    );
+  }
+});
 
 test("authorization signature changes at identity and exact managed-model boundaries", async () => {
   const { buildRuntimeAuthorizationSignature } = await load();

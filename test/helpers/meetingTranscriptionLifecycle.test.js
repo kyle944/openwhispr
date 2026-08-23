@@ -242,3 +242,48 @@ test("authorization abort of an active session never finalizes through stop", as
   await lifecycle.abortSession("meeting-1");
   assert.deepEqual(events, ["abort:meeting-1"]);
 });
+
+test("authorization abort overtakes an in-flight graceful stop", async () => {
+  const stopDeferred = createDeferred();
+  const events = [];
+  let stopSignal;
+  let finalized = false;
+  const lifecycle = createMeetingTranscriptionLifecycle({
+    start: async ({ sessionId }) => ({ success: true, sessionId }),
+    stop: async (sessionId, signal) => {
+      stopSignal = signal;
+      events.push(`stop:${sessionId}`);
+      await stopDeferred.promise;
+      events.push(`stop-complete:${sessionId}`);
+      if (!signal.aborted) finalized = true;
+      return { success: true, transcript: "must not finalize" };
+    },
+    abort: async (sessionId) => {
+      events.push(`abort:${sessionId}`);
+      return { success: true };
+    },
+  });
+  await lifecycle.startSession({
+    sessionId: "meeting-1",
+    ownerWebContents: createOwnerWebContents(),
+    options: {},
+  });
+
+  const stopping = lifecycle.stopSession("meeting-1");
+  await Promise.resolve();
+  const aborting = lifecycle.abortSession("meeting-1");
+
+  assert.deepEqual(await aborting, { success: true });
+  assert.deepEqual(await stopping, {
+    success: false,
+    reason: "authorization-changed",
+    code: "AUTHORIZATION_BOUNDARY_CHANGED",
+  });
+  assert.deepEqual(events, ["stop:meeting-1", "abort:meeting-1"]);
+  assert.equal(stopSignal.aborted, true);
+
+  stopDeferred.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(finalized, false);
+});

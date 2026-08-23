@@ -42,6 +42,7 @@ const gateMocks = {
     });
   `,
   runtimeAuthorizationBoundary: `
+    export { isRuntimeAuthorizationError } from '/helpers/runtimeAuthorizationBoundary.ts?actual';
     export const captureRuntimeAuthorizationLease = (_domains, onChanged) => {
       let current = true;
       const callback = () => {
@@ -270,4 +271,55 @@ test("an authorization change cancels a detached batch and prevents later title 
     store.useBatchQueueStore.getState().queue.map((item) => item.status),
     ["error", "error"]
   );
+});
+
+test("batch title generation never saves after either ReasoningService cancellation shape", async (t) => {
+  globalThis.__uploadTitleFailures = [
+    { message: "Request cancelled", status: 499 },
+    { message: "Cancelled", code: "REASON_CANCELLED" },
+    { message: "Provider unavailable" },
+  ];
+  t.after(() => delete globalThis.__uploadTitleFailures);
+  const { window } = installBrowserGlobals(t);
+  const vite = await createRendererServer(t, {
+    cachePrefix: "openwhispr-upload-batch-title-cancellation-test-",
+    mockModules: {
+      ...gateMocks,
+      "/services/ReasoningService": `
+        export default {
+          async processText() {
+            const failure = globalThis.__uploadTitleFailures.shift();
+            throw Object.assign(new Error(failure.message), failure);
+          },
+        };
+      `,
+    },
+  });
+  const calls = installUploadElectronAPI(window, { diarizedDurationSeconds: null });
+  const store = await vite.ssrLoadModule("/stores/batchQueueStore.ts");
+  const { generateNoteTitle } = await vite.ssrLoadModule("/utils/generateTitle.ts");
+  store.addFiles([
+    { name: "byok-cancelled.m4a", path: "/tmp/byok-cancelled.m4a", sizeBytes: 100 },
+    { name: "cloud-cancelled.m4a", path: "/tmp/cloud-cancelled.m4a", sizeBytes: 100 },
+    { name: "provider-failure.m4a", path: "/tmp/provider-failure.m4a", sizeBytes: 100 },
+  ]);
+  store.processBatchQueue(
+    {
+      transcription,
+      folderId: null,
+      generateTitle: (text) => generateNoteTitle(text, "gpt-test"),
+    },
+    { enabled: false, localModelsReady: false, numSpeakers: null }
+  );
+
+  const queue = await waitForQueueSettled(store.useBatchQueueStore);
+
+  assert.deepEqual(
+    queue.map((item) => item.status),
+    ["error", "error", "done"],
+    "runtime cancellations stop persistence while an ordinary title failure keeps the fallback"
+  );
+  assert.equal(calls.saveNote.length, 1);
+  assert.equal(calls.saveNote[0][0], "hello from the recording");
+  assert.equal(calls.saveNote[0][3], "provider-failure.m4a");
 });
