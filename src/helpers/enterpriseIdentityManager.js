@@ -122,7 +122,6 @@ function requiresEnforcedManagedAccess(config) {
 function resolveEnforcementRequired(errorCode, prior, knownRequired) {
   if (errorCode === "ENTERPRISE_REQUIRED") return false;
   if (knownRequired || requiresEnforcedManagedAccess(prior)) return true;
-  if (prior) return false;
   return undefined;
 }
 

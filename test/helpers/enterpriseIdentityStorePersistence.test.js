@@ -103,6 +103,42 @@ function unavailableResult(enforcementRequired) {
   };
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+async function createBroadcastStoreHarness(t) {
+  let broadcast;
+  installBrowserGlobals(t, {
+    window: {
+      electronAPI: {
+        onManagedEnterpriseConfigChanged(listener) {
+          broadcast = listener;
+        },
+      },
+    },
+  });
+  const vite = await createRendererServer(t, {
+    cachePrefix: "openwhispr-enterprise-broadcast-race-test-",
+    mockModules: {
+      "/services/EnterpriseIdentityService": `
+        export async function getManagedEnterpriseConfig() {
+          return globalThis.__managedEnterprisePersistenceResult;
+        }
+        export function clearManagedEnterpriseIdentity() {}
+      `,
+    },
+  });
+  t.after(() => delete globalThis.__managedEnterprisePersistenceResult);
+  const store = (await vite.ssrLoadModule("/stores/enterpriseIdentityStore.ts"))
+    .useEnterpriseIdentityStore;
+  return { broadcast, store };
+}
+
 test("identity refresh stores known internal failures as codes and preserves dynamic details", async (t) => {
   const { loadFreshStore } = await createStoreHarness(t);
   const store = await loadFreshStore();
@@ -276,6 +312,165 @@ test("a new identity with no snapshot is fail-closed while resolution is pending
   assert.equal(store.getState().lastKnownLocalModelsKnown, true);
 });
 
+test("enterprise refresh preserves the prior readiness verdict for ambiguous responses", async (t) => {
+  const scenarios = [
+    { prior: null, response: undefined, failClosed: true },
+    { prior: true, response: undefined, failClosed: true },
+    { prior: false, response: undefined, failClosed: false },
+    { prior: false, response: true, failClosed: true },
+    { prior: null, response: false, failClosed: false },
+  ];
+
+  for (const scenario of scenarios) {
+    await t.test(
+      `prior ${String(scenario.prior)} with enforcement ${String(scenario.response)}`,
+      async (t) => {
+        const { loadFreshStore } = await createStoreHarness(t);
+        const store = await loadFreshStore();
+        store.setState({
+          accountId,
+          workspaceId,
+          authGeneration,
+          status: "error",
+          config: null,
+          lastKnownLocalModels: null,
+          lastKnownLocalModelsKnown: scenario.prior !== null,
+          lastKnownManagedInferenceConfigured: scenario.prior,
+          error: null,
+          failClosed: scenario.prior !== false,
+        });
+        globalThis.__managedEnterprisePersistenceResult = unavailableResult(scenario.response);
+
+        await store.getState().refresh(accountId, workspaceId, authGeneration, true);
+
+        assert.equal(store.getState().failClosed, scenario.failClosed);
+      }
+    );
+  }
+});
+
+test("a stale same-identity failure cannot restore an unmanaged verdict after a managed broadcast", async (t) => {
+  let broadcast;
+  installBrowserGlobals(t, {
+    window: {
+      electronAPI: {
+        onManagedEnterpriseConfigChanged(listener) {
+          broadcast = listener;
+        },
+      },
+    },
+  });
+  let resolveRefresh;
+  globalThis.__managedEnterprisePersistenceResult = new Promise((resolve) => {
+    resolveRefresh = resolve;
+  });
+  const vite = await createRendererServer(t, {
+    cachePrefix: "openwhispr-enterprise-policy-race-test-",
+    mockModules: {
+      "/services/EnterpriseIdentityService": `
+        export async function getManagedEnterpriseConfig() {
+          return globalThis.__managedEnterprisePersistenceResult;
+        }
+        export function clearManagedEnterpriseIdentity() {}
+      `,
+    },
+  });
+  const store = (await vite.ssrLoadModule("/stores/enterpriseIdentityStore.ts"))
+    .useEnterpriseIdentityStore;
+  t.after(() => delete globalThis.__managedEnterprisePersistenceResult);
+  store.setState({
+    accountId,
+    workspaceId,
+    authGeneration,
+    status: "error",
+    config: null,
+    lastKnownLocalModels: null,
+    lastKnownLocalModelsKnown: true,
+    lastKnownManagedInferenceConfigured: false,
+    error: null,
+    failClosed: false,
+  });
+
+  const refresh = store.getState().refresh(accountId, workspaceId, authGeneration, true);
+  broadcast({
+    accountId,
+    workspaceId,
+    authGeneration,
+    config: null,
+    code: "SSO_REQUIRED",
+    enforcementRequired: true,
+  });
+  resolveRefresh(unavailableResult(undefined));
+  await refresh;
+
+  assert.equal(store.getState().lastKnownManagedInferenceConfigured, true);
+  assert.equal(store.getState().failClosed, true);
+});
+
+test("a stale definitive-unmanaged result cannot reopen inference after a managed broadcast", async (t) => {
+  const { broadcast, store } = await createBroadcastStoreHarness(t);
+  const pending = deferred();
+  globalThis.__managedEnterprisePersistenceResult = pending.promise;
+
+  const refresh = store.getState().refresh(accountId, workspaceId, authGeneration, true);
+  broadcast({
+    accountId,
+    workspaceId,
+    authGeneration,
+    config: null,
+    code: "SSO_REQUIRED",
+    enforcementRequired: true,
+  });
+  pending.resolve(unavailableResult(false));
+  await refresh;
+
+  assert.equal(store.getState().status, "error");
+  assert.equal(store.getState().failClosed, true);
+  assert.equal(store.getState().lastKnownManagedInferenceConfigured, true);
+});
+
+test("a stale success cannot replace a newer managed broadcast", async (t) => {
+  const { broadcast, store } = await createBroadcastStoreHarness(t);
+  const pending = deferred();
+  const newerConfig = { ...managedConfig(), generation: 2 };
+  globalThis.__managedEnterprisePersistenceResult = pending.promise;
+
+  const refresh = store.getState().refresh(accountId, workspaceId, authGeneration, true);
+  broadcast({
+    accountId,
+    workspaceId,
+    authGeneration,
+    config: newerConfig,
+    code: null,
+  });
+  pending.resolve(successResult());
+  await refresh;
+
+  assert.equal(store.getState().status, "ready");
+  assert.equal(store.getState().config?.generation, 2);
+});
+
+test("a stale error cannot erase a newer valid-config broadcast", async (t) => {
+  const { broadcast, store } = await createBroadcastStoreHarness(t);
+  const pending = deferred();
+  const newerConfig = { ...managedConfig(), generation: 2 };
+  globalThis.__managedEnterprisePersistenceResult = pending.promise;
+
+  const refresh = store.getState().refresh(accountId, workspaceId, authGeneration, true);
+  broadcast({
+    accountId,
+    workspaceId,
+    authGeneration,
+    config: newerConfig,
+    code: null,
+  });
+  pending.resolve(unavailableResult(undefined));
+  await refresh;
+
+  assert.equal(store.getState().status, "ready");
+  assert.equal(store.getState().config?.generation, 2);
+});
+
 test("persisted local policy never crosses API origins", async (t) => {
   const { storage } = installBrowserGlobals(t);
   storage.setItem(
@@ -403,5 +598,5 @@ test("an explicit downgrade persists a known-empty local policy", async (t) => {
 
   assert.equal(freshStore.getState().lastKnownLocalModels, null);
   assert.equal(freshStore.getState().lastKnownLocalModelsKnown, true);
-  assert.equal(freshStore.getState().failClosed, true);
+  assert.equal(freshStore.getState().failClosed, false);
 });

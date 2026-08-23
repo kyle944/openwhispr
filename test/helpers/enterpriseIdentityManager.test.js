@@ -228,7 +228,7 @@ test("first authorization and malformed failures keep enforcement unknown", asyn
   }
 });
 
-test("a known nonrequired configuration produces a definitive unmanaged denial", async (t) => {
+test("a prior non-enforced configuration cannot make an ambiguous denial unmanaged", async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openwhispr-enterprise-"));
   t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
   let response = jsonResponse({ data: managedConfig() });
@@ -245,8 +245,8 @@ test("a known nonrequired configuration produces a definitive unmanaged denial",
   assert.equal((await manager.getConfig(request())).success, true);
   response = jsonResponse({ error: "Sign in with company SSO", code: "SSO_REQUIRED" }, 403);
   const denied = await manager.getConfig({ ...request(), forceRefresh: true });
-  assert.equal(denied.enforcementRequired, false);
-  assert.equal(snapshots.at(-1).enforcementRequired, false);
+  assert.equal(denied.enforcementRequired, undefined);
+  assert.equal(Object.hasOwn(snapshots.at(-1), "enforcementRequired"), false);
 });
 
 test("a first transient failure does not claim that enforcement is disabled", async (t) => {

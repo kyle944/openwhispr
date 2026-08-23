@@ -133,6 +133,7 @@ export const useEnterpriseIdentityStore = create<EnterpriseIdentityState>((set, 
     const priorManagedInferenceConfigured = sameIdentity
       ? current.lastKnownManagedInferenceConfigured
       : (persistedSnapshot?.managedInferenceConfigured ?? null);
+    const failClosedForAmbiguousResult = priorManagedInferenceConfigured !== false;
     set({
       accountId,
       workspaceId,
@@ -143,9 +144,7 @@ export const useEnterpriseIdentityStore = create<EnterpriseIdentityState>((set, 
       lastKnownLocalModelsKnown: priorLocalModelsKnown,
       lastKnownManagedInferenceConfigured: priorManagedInferenceConfigured,
       error: null,
-      failClosed: sameIdentity
-        ? current.failClosed
-        : (persistedSnapshot?.managedInferenceConfigured ?? true),
+      failClosed: sameIdentity ? current.failClosed : failClosedForAmbiguousResult,
     });
 
     const promise = (async () => {
@@ -187,19 +186,51 @@ export const useEnterpriseIdentityStore = create<EnterpriseIdentityState>((set, 
         const message = error instanceof Error ? error.message : String(error);
         const enforcementRequired = (error as { enforcementRequired?: boolean })
           .enforcementRequired;
-        const failClosed = typeof enforcementRequired === "boolean" ? enforcementRequired : true;
+        const latest = get();
+        const latestMatchesRequest =
+          latest.accountId === accountId &&
+          latest.workspaceId === workspaceId &&
+          latest.authGeneration === authGeneration;
+        const currentPriorManagedInferenceConfigured = latestMatchesRequest
+          ? latest.lastKnownManagedInferenceConfigured
+          : priorManagedInferenceConfigured;
+        const currentPriorLocalModels = latestMatchesRequest
+          ? latest.lastKnownLocalModels
+          : priorLocalModels;
+        const currentPriorLocalModelsKnown = latestMatchesRequest
+          ? latest.lastKnownLocalModelsKnown
+          : priorLocalModelsKnown;
+        const failClosedForAmbiguousResult = currentPriorManagedInferenceConfigured !== false;
+        const failClosed =
+          typeof enforcementRequired === "boolean"
+            ? enforcementRequired
+            : failClosedForAmbiguousResult;
         if (enforcementRequired === false) {
           writeManagedLocalModelPolicySnapshot(accountId, workspaceId, null, false);
+        } else if (enforcementRequired === true) {
+          writeManagedLocalModelPolicySnapshot(
+            accountId,
+            workspaceId,
+            currentPriorLocalModels,
+            true
+          );
         }
+        const preserveKnownAvailability =
+          failClosed || currentPriorManagedInferenceConfigured === false;
         logger.warn("Managed enterprise AI configuration unavailable", { error: message }, "auth");
         set({
           status: "error",
           config: null,
-          lastKnownLocalModels: failClosed ? priorLocalModels : null,
-          lastKnownLocalModelsKnown: failClosed
-            ? priorLocalModelsKnown
+          lastKnownLocalModels: preserveKnownAvailability ? currentPriorLocalModels : null,
+          lastKnownLocalModelsKnown: preserveKnownAvailability
+            ? currentPriorLocalModelsKnown
             : enforcementRequired === false,
-          lastKnownManagedInferenceConfigured: failClosed ? priorManagedInferenceConfigured : false,
+          lastKnownManagedInferenceConfigured:
+            enforcementRequired === true
+              ? true
+              : failClosed
+                ? currentPriorManagedInferenceConfigured
+                : false,
           error: message,
           failClosed,
         });
@@ -255,11 +286,14 @@ if (typeof window !== "undefined") {
     }
     const currentGeneration = state.config?.generation ?? -1;
     if (snapshot.config && snapshot.config.generation < currentGeneration) return;
+    requestSequence += 1;
+    const priorManagedInferenceConfigured = state.lastKnownManagedInferenceConfigured;
+    const failClosedForAmbiguousResult = priorManagedInferenceConfigured !== false;
     const failClosed = snapshot.config
       ? false
       : typeof snapshot.enforcementRequired === "boolean"
         ? snapshot.enforcementRequired
-        : true;
+        : failClosedForAmbiguousResult;
     let localModels = state.lastKnownLocalModels;
     let localModelsKnown = state.lastKnownLocalModelsKnown;
     let managedInferenceConfigured = state.lastKnownManagedInferenceConfigured;
@@ -293,6 +327,9 @@ if (typeof window !== "undefined") {
       localModelsKnown = true;
       managedInferenceConfigured = false;
       writeManagedLocalModelPolicySnapshot(state.accountId, state.workspaceId, null, false);
+    } else if (snapshot.enforcementRequired === true) {
+      managedInferenceConfigured = true;
+      writeManagedLocalModelPolicySnapshot(state.accountId, state.workspaceId, localModels, true);
     }
     useEnterpriseIdentityStore.setState({
       status: snapshot.config ? "ready" : "error",

@@ -11,6 +11,7 @@ import { Card, CardContent } from "./components/ui/card.tsx";
 import { LEGACY_ONBOARDING_STEP_KEY, ONBOARDING_SESSION_KEY } from "./components/onboarding/flow";
 import { useAuth } from "./hooks/useAuth";
 import { useTheme } from "./hooks/useTheme";
+import { useEnterpriseIdentityStore } from "./stores/enterpriseIdentityStore";
 import { usePolicyStore } from "./stores/policyStore";
 import { isControlPanelWindow } from "./utils/windowContext.ts";
 
@@ -41,12 +42,17 @@ export default function AppRouter() {
 function MainApp() {
   const { isSignedIn, isGracePeriodOnly, isLoaded: authLoaded } = useAuth();
   const policyStatus = usePolicyStore((state) => state.status);
+  const enterpriseStatus = useEnterpriseIdentityStore((state) => state.status);
+  const enterpriseFailClosed = useEnterpriseIdentityStore((state) => state.failClosed);
   const policyResolved =
     !isSignedIn ||
     policyStatus === "managed" ||
     policyStatus === "unmanaged" ||
     policyStatus === "error";
   const isWaitingForPolicyStart = isSignedIn && !policyResolved;
+  const enterpriseInferenceReady =
+    !isSignedIn ||
+    (!enterpriseFailClosed && (enterpriseStatus === "ready" || enterpriseStatus === "error"));
   const autoSyncReady = authLoaded && policyResolved;
 
   const [showOnboarding, setShowOnboarding] = useState(false);
@@ -133,7 +139,10 @@ function MainApp() {
   }, [isControlPanel, isLoading, isWaitingForPolicyStart, showOnboarding]);
 
   useEffect(() => {
-    if (isLoading || isWaitingForPolicyStart) return;
+    if (isLoading || isWaitingForPolicyStart || !enterpriseInferenceReady) {
+      void window.electronAPI?.setOnboardingActive?.(true);
+      return;
+    }
 
     const onboardingCompleted = localStorage.getItem("onboardingCompleted") === "true";
     const normalAppVisible = onboardingCompleted && (!isControlPanel || !showOnboarding);
@@ -141,7 +150,13 @@ function MainApp() {
     // actually committed the normal app may release global hotkeys and popup
     // surfaces; fresh installs and onboarding reloads keep them suppressed.
     void window.electronAPI?.setOnboardingActive?.(!normalAppVisible);
-  }, [isControlPanel, isLoading, isWaitingForPolicyStart, showOnboarding]);
+  }, [
+    enterpriseInferenceReady,
+    isControlPanel,
+    isLoading,
+    isWaitingForPolicyStart,
+    showOnboarding,
+  ]);
 
   const handleOnboardingComplete = (options) => {
     if (options?.openSettings) {
