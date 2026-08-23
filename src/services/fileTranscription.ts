@@ -1,7 +1,10 @@
 import { withSessionRefresh } from "../lib/auth";
 import { resolveTranscriptionRoute } from "../helpers/transcriptionRoute";
 import { getTranscriptionProviders } from "../models/ModelRegistry";
-import { resolveManagedLocalTranscriptionRuntime } from "../helpers/managedLocalTranscriptionRuntime";
+import {
+  captureManagedRuntimeAuthorizationContext,
+  resolveManagedLocalTranscriptionRuntime,
+} from "../helpers/managedLocalTranscriptionRuntime";
 
 export interface FileTranscriptionResult {
   success: boolean;
@@ -88,18 +91,29 @@ export async function transcribeFile(
   }
   if (runtime.managed) {
     const settings = runtime.settings;
-    return window.electronAPI.transcribeAudioFile(filePath, {
-      provider: settings.localTranscriptionProvider as "whisper" | "nvidia",
-      model:
-        settings.localTranscriptionProvider === "nvidia"
-          ? settings.parakeetModel
-          : settings.whisperModel,
-      requestId: opts.requestId,
-    });
+    const provider = settings.localTranscriptionProvider as "whisper" | "nvidia";
+    const model = provider === "nvidia" ? settings.parakeetModel : settings.whisperModel;
+    return window.electronAPI.transcribeAudioFile(
+      filePath,
+      { provider, model, requestId: opts.requestId },
+      captureManagedRuntimeAuthorizationContext({
+        managed: true,
+        provider,
+        model,
+      })
+    );
   }
   if (cfg.isOpenWhisprCloud) {
     return withSessionRefresh(async () => {
-      const r = await window.electronAPI.transcribeAudioFileCloud!(filePath, opts);
+      const r = await window.electronAPI.transcribeAudioFileCloud!(
+        filePath,
+        opts,
+        captureManagedRuntimeAuthorizationContext({
+          managed: false,
+          provider: "openwhispr",
+          model: null,
+        })
+      );
       if (!r.success && r.code) {
         throw Object.assign(new Error(r.error || "Cloud transcription failed"), {
           code: r.code,
@@ -110,11 +124,13 @@ export async function transcribeFile(
   }
 
   if (cfg.useLocalWhisper) {
-    return window.electronAPI.transcribeAudioFile(filePath, {
-      provider: cfg.localTranscriptionProvider as "whisper" | "nvidia",
-      model: cfg.localTranscriptionProvider === "nvidia" ? cfg.parakeetModel : cfg.whisperModel,
-      requestId: opts.requestId,
-    });
+    const provider = cfg.localTranscriptionProvider as "whisper" | "nvidia";
+    const model = provider === "nvidia" ? cfg.parakeetModel : cfg.whisperModel;
+    return window.electronAPI.transcribeAudioFile(
+      filePath,
+      { provider, model, requestId: opts.requestId },
+      captureManagedRuntimeAuthorizationContext({ managed: false, provider, model })
+    );
   }
 
   // Pre-flight through the shared resolver: code-carrying errors (incl. the
@@ -141,21 +157,33 @@ export async function transcribeFile(
 
   // Self-hosted fields make the handler route to the configured server
   // (fail-closed on misconfiguration) instead of stale BYOK settings.
-  return window.electronAPI.transcribeAudioFileByok!({
-    filePath,
-    apiKey: cfg.getApiKey(),
-    baseUrl: cfg.cloudTranscriptionBaseUrl,
-    model: cfg.cloudTranscriptionModel,
-    diarize: diarize || undefined,
-    timestamps: opts.timestamps || undefined,
-    provider: cfg.cloudTranscriptionProvider,
-    language: cfg.language,
-    environment: cfg.cortiEnvironment,
-    tenant: cfg.cortiTenant,
-    transcriptionMode: cfg.transcriptionMode,
-    remoteTranscriptionUrl: cfg.remoteTranscriptionUrl,
-    remoteTranscriptionModel: cfg.remoteTranscriptionModel,
-  });
+  return window.electronAPI.transcribeAudioFileByok!(
+    {
+      filePath,
+      apiKey: cfg.getApiKey(),
+      baseUrl: cfg.cloudTranscriptionBaseUrl,
+      model: cfg.cloudTranscriptionModel,
+      diarize: diarize || undefined,
+      timestamps: opts.timestamps || undefined,
+      provider: cfg.cloudTranscriptionProvider,
+      language: cfg.language,
+      environment: cfg.cortiEnvironment,
+      tenant: cfg.cortiTenant,
+      transcriptionMode: cfg.transcriptionMode,
+      remoteTranscriptionUrl: cfg.remoteTranscriptionUrl,
+      remoteTranscriptionModel: cfg.remoteTranscriptionModel,
+    },
+    captureManagedRuntimeAuthorizationContext({
+      managed: false,
+      provider: route.transport === "local" ? cfg.localTranscriptionProvider : route.provider,
+      model:
+        route.transport === "local"
+          ? cfg.localTranscriptionProvider === "nvidia"
+            ? cfg.parakeetModel
+            : cfg.whisperModel
+          : route.model,
+    })
+  );
 }
 
 // OpenAI/Mistral BYOK handle diarization inside the transcription call itself.

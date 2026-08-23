@@ -68,6 +68,12 @@ test("meeting prepare invalidates authorization while system-audio capability is
 
   Module._load = function loadWithMocks(request, parent, isMain) {
     if (request === "electron") return electronStub;
+    if (parent?.filename === handlersModulePath && request === "./tokenStore") {
+      return {
+        get: () => null,
+        getState: () => ({ token: null, generation: 0 }),
+      };
+    }
     if (parent?.filename === handlersModulePath && request === "./meetingStreamingProviders") {
       return {
         ALLOWED_MEETING_PROVIDERS: new Set(["local", "deepgram-realtime"]),

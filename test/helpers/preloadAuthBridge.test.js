@@ -151,17 +151,56 @@ test("dictation authorization abort invokes the non-finalizing main-process chan
   assert.deepEqual(invocations, [["dictation-streaming-abort"]]);
 });
 
-test("history retry forwards request ownership through retry and commit", async () => {
+test("history retry forwards authorization only through start, never commit", async () => {
   const { api, invocations } = loadPreloadApi();
   const settings = { transcriptionMode: "providers" };
+  const context = {
+    accountId: "account-a",
+    workspaceId: "workspace-a",
+    authGeneration: 7,
+    configGeneration: 11,
+    managed: false,
+    provider: "openai",
+    model: "gpt-4o-mini-transcribe",
+  };
 
-  await api.retryTranscription(7, settings, "history-retry-1");
+  await api.retryTranscription(7, settings, "history-retry-1", context);
   await api.commitRetryTranscription(7, "history-retry-1", "final text", "raw text");
 
   assert.deepEqual(invocations, [
-    ["retry-transcription", 7, settings, "history-retry-1"],
+    ["retry-transcription", 7, settings, "history-retry-1", context],
     ["commit-retry-transcription", 7, "history-retry-1", "final text", "raw text"],
   ]);
+});
+
+test("transcription start families append runtime context without changing payloads", async (t) => {
+  const context = {
+    accountId: null,
+    workspaceId: null,
+    authGeneration: null,
+    configGeneration: null,
+    managed: false,
+    provider: "whisper",
+    model: "base",
+  };
+  const cases = [
+    ["transcribeAudioFile", "transcribe-audio-file", ["/tmp/audio.webm", { model: "base" }]],
+    ["transcribeLocalWhisper", "transcribe-local-whisper", [new ArrayBuffer(4), { model: "base" }]],
+    ["cloudTranscribe", "cloud-transcribe", [new ArrayBuffer(4), { language: "en" }]],
+    ["transcribeAudioFileByok", "transcribe-audio-file-byok", [{ filePath: "/tmp/audio.webm" }]],
+    ["dictationRealtimeStart", "dictation-realtime-start", [{ provider: "openai-realtime" }]],
+    ["startDictationPreview", "start-dictation-preview", [{ provider: "whisper" }]],
+    ["meetingTranscriptionPrepare", "meeting-transcription-prepare", [{ provider: "local" }]],
+    ["meetingTranscriptionStart", "meeting-transcription-start", [{ provider: "local" }]],
+  ];
+
+  for (const [method, channel, args] of cases) {
+    await t.test(method, async () => {
+      const { api, invocations } = loadPreloadApi();
+      await api[method](...args, context);
+      assert.deepEqual(invocations, [[channel, ...args, context]]);
+    });
+  }
 });
 
 test("agent streaming listeners strip Electron events and preserve correlation", () => {

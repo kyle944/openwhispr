@@ -156,6 +156,7 @@ function createEnterpriseIdentityManager({
   const cloudCredentials = new Map();
   const cloudCredentialRequests = new Map();
   const enforcedConfigRequired = new Set();
+  const definitivelyUnmanaged = new Set();
   let credentialEpoch = 0;
 
   function clearIdentityCredentials(identity) {
@@ -174,6 +175,8 @@ function createEnterpriseIdentityManager({
     configRequests.delete(identity.cacheKey);
     clearIdentityCredentials(identity);
     removeCachedConfig(cachePath, identity);
+    if (enforcementRequired === false) definitivelyUnmanaged.add(identity.cacheKey);
+    else definitivelyUnmanaged.delete(identity.cacheKey);
     broadcast?.({
       accountId: identity.accountId,
       workspaceId: identity.workspaceId,
@@ -307,6 +310,7 @@ function createEnterpriseIdentityManager({
       clearIdentityCredentials(identity);
     }
     configs.set(identity.cacheKey, { config, refreshedAt: now() });
+    definitivelyUnmanaged.delete(identity.cacheKey);
     if (requiresEnforcedManagedAccess(config)) enforcedConfigRequired.add(identity.cacheKey);
     else enforcedConfigRequired.delete(identity.cacheKey);
     try {
@@ -355,6 +359,9 @@ function createEnterpriseIdentityManager({
         if (disk) {
           configs.set(identity.cacheKey, { config: disk, refreshedAt: 0 });
           return { config: disk, status: "cached" };
+        }
+        if (definitivelyUnmanaged.has(identity.cacheKey)) {
+          error.enforcementRequired = false;
         }
         throw error;
       })
@@ -571,6 +578,7 @@ function createEnterpriseIdentityManager({
     cloudCredentials.clear();
     cloudCredentialRequests.clear();
     enforcedConfigRequired.clear();
+    definitivelyUnmanaged.clear();
     try {
       fs.unlinkSync(cachePath);
     } catch (error) {

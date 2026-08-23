@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { getSettings, selectResolvedMeetingTranscription } from "./settingsStore";
 import {
+  captureManagedRuntimeAuthorizationContext,
   isManagedLocalTranscriptionRuntimeAllowed,
   resolveManagedLocalTranscriptionRuntime,
 } from "../helpers/managedLocalTranscriptionRuntime";
@@ -149,7 +150,7 @@ const getMeetingTranscriptionRuntime = () => {
   return resolveManagedLocalTranscriptionRuntime(selectResolvedMeetingTranscription(state));
 };
 
-const getMeetingTranscriptionOptions = () => {
+const getMeetingTranscriptionStart = () => {
   const state = getSettings();
   const runtime = getMeetingTranscriptionRuntime();
   if (runtime.kind === "error") {
@@ -158,7 +159,7 @@ const getMeetingTranscriptionOptions = () => {
   const resolved = runtime.settings;
   const language = getBaseLanguageCode(state.preferredLanguage);
 
-  return resolveMeetingTranscriptionOptions({
+  const options = resolveMeetingTranscriptionOptions({
     transcriptionMode: resolved.transcriptionMode,
     language,
     localProvider: resolved.localTranscriptionProvider,
@@ -172,6 +173,16 @@ const getMeetingTranscriptionOptions = () => {
     cortiTenant: state.cortiTenant,
     keyterms: (state.customDictionary ?? []).filter(Boolean),
   });
+  const provider = options.provider === "local" ? options.localProvider : options.provider;
+  const model = options.provider === "local" ? options.localModel : options.model;
+  return {
+    options,
+    context: captureManagedRuntimeAuthorizationContext({
+      managed: runtime.managed,
+      provider,
+      model: model || null,
+    }),
+  };
 };
 
 const stopMediaStream = (stream: MediaStream | null) => {
@@ -766,8 +777,10 @@ export async function prepareTranscription(): Promise<void> {
   const promise = (async () => {
     try {
       authorization.assertCurrent();
+      const start = getMeetingTranscriptionStart();
       const result = await window.electronAPI?.meetingTranscriptionPrepare?.(
-        getMeetingTranscriptionOptions()
+        start.options,
+        start.context
       );
       authorization.assertCurrent();
 
@@ -943,12 +956,16 @@ export async function startRecording(args: StartRecordingArgs): Promise<boolean>
 
       startOperation.markMainStartAttempted();
       authorization.assertCurrent();
-      const mainStartPromise = window.electronAPI?.meetingTranscriptionStart?.({
-        ...getMeetingTranscriptionOptions(),
-        noteId: args.noteId ?? null,
-        sessionId,
-        autoEndEligible: args.autoEndEligible,
-      });
+      const transcriptionStart = getMeetingTranscriptionStart();
+      const mainStartPromise = window.electronAPI?.meetingTranscriptionStart?.(
+        {
+          ...transcriptionStart.options,
+          noteId: args.noteId ?? null,
+          sessionId,
+          autoEndEligible: args.autoEndEligible,
+        },
+        transcriptionStart.context
+      );
       const micCapturePromise = getMeetingMicConstraints().then(async (constraints) => {
         if (!isCurrentStart()) return null;
         try {

@@ -89,9 +89,12 @@ import { useEnterpriseIdentityStore } from "../stores/enterpriseIdentityStore";
 import { useWorkspaceStore } from "../stores/workspaceStore";
 import { canApplyPendingCloudMigration } from "./onboarding/managedLocalModels";
 import {
+  captureManagedRuntimeAuthorizationContext,
   isManagedLocalTranscriptionRuntimeAllowed,
   resolveManagedLocalTranscriptionRuntime,
 } from "../helpers/managedLocalTranscriptionRuntime";
+import { resolveTranscriptionRoute } from "../helpers/transcriptionRoute";
+import { getTranscriptionProviders } from "../models/ModelRegistry";
 import { captureRuntimeAuthorizationLease } from "../helpers/runtimeAuthorizationBoundary";
 
 const platform = getCachedPlatform();
@@ -677,27 +680,59 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
         }
         if (runtime.kind === "error") return;
         const effectiveSettings = runtime.settings;
+        const retrySettings = {
+          useLocalWhisper: effectiveSettings.useLocalWhisper,
+          localTranscriptionProvider: effectiveSettings.localTranscriptionProvider,
+          cloudTranscriptionMode: effectiveSettings.cloudTranscriptionMode,
+          cloudTranscriptionProvider: effectiveSettings.cloudTranscriptionProvider,
+          cloudTranscriptionModel: effectiveSettings.cloudTranscriptionModel,
+          cloudTranscriptionBaseUrl: effectiveSettings.cloudTranscriptionBaseUrl,
+          cortiEnvironment: effectiveSettings.cortiEnvironment,
+          cortiTenant: effectiveSettings.cortiTenant,
+          parakeetModel: effectiveSettings.parakeetModel,
+          whisperModel: effectiveSettings.whisperModel,
+          preferredLanguage: effectiveSettings.preferredLanguage,
+          transcriptionMode: effectiveSettings.transcriptionMode,
+          remoteTranscriptionType: effectiveSettings.remoteTranscriptionType,
+          remoteTranscriptionUrl: effectiveSettings.remoteTranscriptionUrl,
+          remoteTranscriptionModel: effectiveSettings.remoteTranscriptionModel,
+        };
+        const route = resolveTranscriptionRoute({
+          settings: retrySettings,
+          providers: getTranscriptionProviders(),
+          request: {
+            effectiveLanguage:
+              retrySettings.preferredLanguage && retrySettings.preferredLanguage !== "auto"
+                ? retrySettings.preferredLanguage.split("-")[0]
+                : undefined,
+          },
+        });
+        const admissionRoute = effectiveSettings.useLocalWhisper
+          ? effectiveSettings.localTranscriptionProvider === "nvidia"
+            ? { provider: "nvidia", model: effectiveSettings.parakeetModel }
+            : { provider: "whisper", model: effectiveSettings.whisperModel }
+          : effectiveSettings.cloudTranscriptionMode === "openwhispr"
+            ? { provider: "openwhispr", model: null }
+            : route.transport === "error"
+              ? { provider: null, model: null }
+              : route.transport === "local"
+                ? {
+                    provider: effectiveSettings.localTranscriptionProvider,
+                    model:
+                      effectiveSettings.localTranscriptionProvider === "nvidia"
+                        ? effectiveSettings.parakeetModel
+                        : effectiveSettings.whisperModel,
+                  }
+                : { provider: route.provider, model: route.model };
         authorization.assertCurrent();
         const result = await window.electronAPI.retryTranscription(
           id,
-          {
-            useLocalWhisper: effectiveSettings.useLocalWhisper,
-            localTranscriptionProvider: effectiveSettings.localTranscriptionProvider,
-            cloudTranscriptionMode: effectiveSettings.cloudTranscriptionMode,
-            cloudTranscriptionProvider: effectiveSettings.cloudTranscriptionProvider,
-            cloudTranscriptionModel: effectiveSettings.cloudTranscriptionModel,
-            cloudTranscriptionBaseUrl: effectiveSettings.cloudTranscriptionBaseUrl,
-            cortiEnvironment: effectiveSettings.cortiEnvironment,
-            cortiTenant: effectiveSettings.cortiTenant,
-            parakeetModel: effectiveSettings.parakeetModel,
-            whisperModel: effectiveSettings.whisperModel,
-            preferredLanguage: effectiveSettings.preferredLanguage,
-            transcriptionMode: effectiveSettings.transcriptionMode,
-            remoteTranscriptionType: effectiveSettings.remoteTranscriptionType,
-            remoteTranscriptionUrl: effectiveSettings.remoteTranscriptionUrl,
-            remoteTranscriptionModel: effectiveSettings.remoteTranscriptionModel,
-          },
-          requestId
+          retrySettings,
+          requestId,
+          captureManagedRuntimeAuthorizationContext({
+            managed: runtime.managed,
+            ...admissionRoute,
+          })
         );
         pendingCommit = result.success && result.pendingCommit === true;
         authorization.assertCurrent();

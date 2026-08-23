@@ -61,13 +61,86 @@ const electronStub = {
 
 const cortiCalls = [];
 const tinfoilCalls = [];
+const admissionDispatches = [];
 let cortiBehavior = async () => ({ text: "corti text" });
+let tokenState = { token: null, generation: 0 };
+let enterpriseConfigResult = null;
+let enterpriseConfigBehavior = async () => enterpriseConfigResult;
+
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+const useManagedAdmissionConfig = async () => {
+  tokenState = { token: "managed-token", generation: 7 };
+  enterpriseConfigResult = {
+    success: true,
+    accountId: "account-a",
+    workspaceId: "workspace-a",
+    authGeneration: 7,
+    config: {
+      workspaceId: "workspace-a",
+      generation: 11,
+      localModels: {
+        transcription: [{ provider: "whisper", modelId: "small" }],
+        reasoning: [],
+      },
+    },
+  };
+  const mainSender = { id: 1 };
+  fakeThis.windowManager.mainWindow = { webContents: mainSender };
+  await handlers.get("get-managed-enterprise-config")(
+    { sender: mainSender },
+    "account-a",
+    "workspace-a",
+    7
+  );
+};
+
+const managedContext = (provider, model, managed = false) => ({
+  accountId: "account-a",
+  workspaceId: "workspace-a",
+  authGeneration: 7,
+  configGeneration: 11,
+  managed,
+  provider,
+  model,
+});
 
 // Kept installed for the whole file: the corti client is require()d lazily at
 // handler invocation time, not at module load.
 Module._load = function loadWithMocks(request, parent, isMain) {
   if (request === "electron") return electronStub;
   if (parent?.filename === handlersModulePath) {
+    if (request === "./tokenStore") {
+      return {
+        get: () => tokenState.token,
+        getState: () => ({ ...tokenState }),
+      };
+    }
+    if (request === "./enterpriseIdentityManager") {
+      return {
+        createEnterpriseIdentityManager: () => ({
+          clear() {},
+          getConfig: (request) => enterpriseConfigBehavior(request),
+          resolveProvider: async () => ({ managed: false }),
+        }),
+      };
+    }
+    if (request === "./meetingTranscriptionLifecycle") {
+      return () => ({
+        abortSession: async () => ({ success: true }),
+        startSession: async () => {
+          admissionDispatches.push("meeting-start");
+          return { success: true };
+        },
+        stopSession: async () => ({ success: true }),
+      });
+    }
     if (request === "./cortiTranscription") {
       return {
         transcribeAudio: async (opts) => {
@@ -110,6 +183,11 @@ function buildFakeThis() {
   const target = {
     sessionId: "test-session",
     _uploadCancelRegistry: createUploadCancelRegistry(),
+    _cloudTranscriptionRequests: {
+      begin: () => ({ signal: { aborted: false } }),
+      cancelSender() {},
+      complete() {},
+    },
     audioStorageManager: { getAudioBuffer: (id) => (id === 7 ? Buffer.from([1, 2, 3]) : null) },
     databaseManager: {
       updateTranscriptionText: (...args) => databaseWrites.push(["text", ...args]),
@@ -127,6 +205,24 @@ function buildFakeThis() {
       getCortiClientId: () => "corti-id",
       getCortiClientSecret: () => "corti-secret",
     },
+    whisperManager: {
+      serverManager: { isAvailable: () => true },
+      transcribeLocalWhisper: async () => {
+        admissionDispatches.push("whisper");
+        return { success: true, text: "local text" };
+      },
+    },
+    parakeetManager: {
+      supportsOnlineStreaming: () => false,
+      transcribeLocalParakeet: async () => {
+        admissionDispatches.push("parakeet");
+        return { success: true, text: "local text" };
+      },
+    },
+    windowManager: {
+      showTranscriptionPreview: () => admissionDispatches.push("preview"),
+      hideTranscriptionPreview() {},
+    },
   };
   return new Proxy(target, {
     get: (t, prop) => (prop in t ? t[prop] : anything()),
@@ -134,11 +230,13 @@ function buildFakeThis() {
 }
 
 let retryHandler;
+let fakeThis;
 test.before(() => {
   delete require.cache[handlersModulePath];
   const IPCHandlers = require(handlersModulePath);
   const Ctor = IPCHandlers.default || IPCHandlers;
-  Ctor.prototype.setupHandlers.call(buildFakeThis());
+  fakeThis = buildFakeThis();
+  Ctor.prototype.setupHandlers.call(fakeThis);
   retryHandler = handlers.get("retry-transcription");
   assert.ok(retryHandler, "retry-transcription must be registered");
 });
@@ -148,15 +246,331 @@ test.after(() => {
 });
 
 test.beforeEach(() => {
+  fakeThis._clearActiveEnterpriseIdentity?.();
+  delete fakeThis.windowManager.mainWindow;
   fetches.length = 0;
   databaseWrites.length = 0;
   broadcasts.length = 0;
   cortiCalls.length = 0;
   tinfoilCalls.length = 0;
+  admissionDispatches.length = 0;
+  tokenState = { token: null, generation: 0 };
+  enterpriseConfigResult = null;
+  enterpriseConfigBehavior = async () => enterpriseConfigResult;
 });
 
 const invoke = (settings, id = 7, requestId) =>
   retryHandler({ sender: {} }, id, settings, requestId);
+
+test("managed admission rejects each start family before provider dispatch", async (t) => {
+  await useManagedAdmissionConfig();
+  const sender = { id: 22, once() {}, removeListener() {}, send() {}, isDestroyed: () => false };
+  const cases = [
+    {
+      name: "dictation batch",
+      channel: "cloud-transcribe",
+      args: [new ArrayBuffer(4), {}, managedContext("openwhispr", null)],
+    },
+    {
+      name: "preview",
+      channel: "start-dictation-preview",
+      args: [
+        { provider: "nvidia", model: "parakeet-tdt-0.6b-v3", display: false },
+        managedContext("nvidia", "parakeet-tdt-0.6b-v3"),
+      ],
+    },
+    {
+      name: "realtime",
+      channel: "dictation-realtime-start",
+      args: [
+        { provider: "openai-realtime", model: "gpt-4o-mini-transcribe" },
+        managedContext("openai-realtime", "gpt-4o-mini-transcribe"),
+      ],
+    },
+    {
+      name: "upload",
+      channel: "transcribe-audio-file-byok",
+      args: [
+        {
+          filePath: "/tmp/not-read.webm",
+          provider: "openai",
+          model: "gpt-4o-mini-transcribe",
+          transcriptionMode: "providers",
+        },
+        managedContext("openai", "gpt-4o-mini-transcribe"),
+      ],
+    },
+    {
+      name: "history",
+      channel: "retry-transcription",
+      args: [
+        7,
+        {
+          useLocalWhisper: false,
+          cloudTranscriptionMode: "openwhispr",
+          transcriptionMode: "providers",
+        },
+        "managed-history-bypass",
+        managedContext("openwhispr", null),
+      ],
+    },
+    {
+      name: "meeting prepare",
+      channel: "meeting-transcription-prepare",
+      args: [
+        {
+          provider: "local",
+          localProvider: "nvidia",
+          localModel: "parakeet-tdt-0.6b-v3",
+        },
+        managedContext("nvidia", "parakeet-tdt-0.6b-v3"),
+      ],
+    },
+    {
+      name: "meeting start",
+      channel: "meeting-transcription-start",
+      args: [
+        {
+          provider: "local",
+          localProvider: "nvidia",
+          localModel: "parakeet-tdt-0.6b-v3",
+          sessionId: "managed-meeting-bypass",
+        },
+        managedContext("nvidia", "parakeet-tdt-0.6b-v3"),
+      ],
+    },
+    {
+      name: "direct local decode",
+      channel: "transcribe-local-parakeet",
+      args: [
+        new ArrayBuffer(4),
+        { model: "parakeet-tdt-0.6b-v3" },
+        managedContext("nvidia", "parakeet-tdt-0.6b-v3"),
+      ],
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      await useManagedAdmissionConfig();
+      admissionDispatches.length = 0;
+      fetches.length = 0;
+      if (testCase.name === "realtime") {
+        fakeThis._dictationStreaming = {
+          get isConnected() {
+            admissionDispatches.push("realtime");
+            return true;
+          },
+        };
+      }
+      const result = await handlers.get(testCase.channel)({ sender }, ...testCase.args);
+      assert.equal(result.success, false);
+      assert.equal(result.code, "MANAGED_MODEL_REQUIRED");
+      assert.deepEqual(admissionDispatches, []);
+      assert.deepEqual(fetches, []);
+    });
+  }
+});
+
+test("managed local history retry admits its exact configured route", async () => {
+  await useManagedAdmissionConfig();
+
+  const result = await retryHandler(
+    { sender: {} },
+    7,
+    {
+      useLocalWhisper: true,
+      localTranscriptionProvider: "whisper",
+      whisperModel: "small",
+      preferredLanguage: "auto",
+    },
+    undefined,
+    managedContext("whisper", "small", true)
+  );
+
+  assert.equal(result.success, true);
+  assert.deepEqual(admissionDispatches, ["whisper"]);
+  assert.deepEqual(fetches, []);
+});
+
+test("a late accessible workspace cannot replace the main window's newer active identity", async () => {
+  tokenState = { token: "managed-token", generation: 7 };
+  const mainSender = { id: 1 };
+  fakeThis.windowManager.mainWindow = { webContents: mainSender };
+  const workspaceA = createDeferred();
+  const workspaceB = createDeferred();
+  const configs = {
+    "workspace-a": {
+      success: true,
+      accountId: "account-a",
+      workspaceId: "workspace-a",
+      authGeneration: 7,
+      config: {
+        workspaceId: "workspace-a",
+        generation: 11,
+        localModels: { transcription: [], reasoning: [] },
+      },
+    },
+    "workspace-b": {
+      success: true,
+      accountId: "account-a",
+      workspaceId: "workspace-b",
+      authGeneration: 7,
+      config: {
+        workspaceId: "workspace-b",
+        generation: 22,
+        localModels: {
+          transcription: [{ provider: "whisper", modelId: "small" }],
+          reasoning: [],
+        },
+      },
+    },
+  };
+  enterpriseConfigBehavior = ({ workspaceId }) =>
+    workspaceId === "workspace-a" ? workspaceA.promise : workspaceB.promise;
+
+  const getConfig = handlers.get("get-managed-enterprise-config");
+  const pendingA = getConfig({ sender: mainSender }, "account-a", "workspace-a", 7);
+  const pendingB = getConfig({ sender: mainSender }, "account-a", "workspace-b", 7);
+  workspaceB.resolve(configs["workspace-b"]);
+  await pendingB;
+  workspaceA.resolve(configs["workspace-a"]);
+  await pendingA;
+
+  enterpriseConfigBehavior = async ({ workspaceId }) => configs[workspaceId];
+  admissionDispatches.length = 0;
+  const staleResult = await handlers.get("transcribe-local-whisper")(
+    { sender: { id: 2 } },
+    new ArrayBuffer(4),
+    { model: "base" },
+    {
+      accountId: "account-a",
+      workspaceId: "workspace-a",
+      authGeneration: 7,
+      configGeneration: 11,
+      managed: false,
+      provider: "whisper",
+      model: "base",
+    }
+  );
+
+  assert.equal(staleResult.success, false);
+  assert.equal(staleResult.code, "AUTHORIZATION_BOUNDARY_CHANGED");
+  assert.deepEqual(admissionDispatches, []);
+
+  const currentResult = await handlers.get("transcribe-local-whisper")(
+    { sender: { id: 2 } },
+    new ArrayBuffer(4),
+    { model: "small" },
+    {
+      accountId: "account-a",
+      workspaceId: "workspace-b",
+      authGeneration: 7,
+      configGeneration: 22,
+      managed: true,
+      provider: "whisper",
+      model: "small",
+    }
+  );
+
+  assert.equal(currentResult.success, true);
+  assert.deepEqual(admissionDispatches, ["whisper"]);
+});
+
+test("a start cannot dispatch after its main-owned identity changes while config awaits", async () => {
+  await useManagedAdmissionConfig();
+  const mainSender = fakeThis.windowManager.mainWindow.webContents;
+  const startLookupEntered = createDeferred();
+  const startConfig = createDeferred();
+  const workspaceBConfig = {
+    success: true,
+    accountId: "account-a",
+    workspaceId: "workspace-b",
+    authGeneration: 7,
+    config: {
+      workspaceId: "workspace-b",
+      generation: 22,
+      localModels: {
+        transcription: [{ provider: "whisper", modelId: "small" }],
+        reasoning: [],
+      },
+    },
+  };
+  enterpriseConfigBehavior = ({ workspaceId }) => {
+    if (workspaceId === "workspace-a") {
+      startLookupEntered.resolve();
+      return startConfig.promise;
+    }
+    return Promise.resolve(workspaceBConfig);
+  };
+  admissionDispatches.length = 0;
+
+  const pendingStart = handlers.get("transcribe-local-whisper")(
+    { sender: { id: 2 } },
+    new ArrayBuffer(4),
+    { model: "small" },
+    managedContext("whisper", "small", true)
+  );
+  await startLookupEntered.promise;
+  await handlers.get("get-managed-enterprise-config")(
+    { sender: mainSender },
+    "account-a",
+    "workspace-b",
+    7
+  );
+  startConfig.resolve(enterpriseConfigResult);
+
+  const result = await pendingStart;
+  assert.equal(result.success, false);
+  assert.equal(result.code, "AUTHORIZATION_BOUNDARY_CHANGED");
+  assert.deepEqual(admissionDispatches, []);
+});
+
+test("main-owned identity invalidation prevents a later transcription dispatch", async (t) => {
+  const cases = [
+    {
+      name: "main-window clear",
+      invalidate: async (mainSender) => {
+        await handlers.get("clear-managed-enterprise-identity")({ sender: mainSender });
+      },
+    },
+    {
+      name: "token changes while a binding request awaits",
+      invalidate: async (mainSender) => {
+        const configResponse = createDeferred();
+        enterpriseConfigBehavior = () => configResponse.promise;
+        const pendingRefresh = handlers.get("get-managed-enterprise-config")(
+          { sender: mainSender },
+          "account-a",
+          "workspace-a",
+          7
+        );
+        tokenState = { token: "replacement-token", generation: 7 };
+        configResponse.resolve(enterpriseConfigResult);
+        await pendingRefresh;
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    await t.test(testCase.name, async () => {
+      await useManagedAdmissionConfig();
+      await testCase.invalidate(fakeThis.windowManager.mainWindow.webContents);
+      admissionDispatches.length = 0;
+
+      const result = await handlers.get("transcribe-local-whisper")(
+        { sender: { id: 2 } },
+        new ArrayBuffer(4),
+        { model: "small" },
+        managedContext("whisper", "small", true)
+      );
+
+      assert.equal(result.success, false);
+      assert.equal(result.code, "AUTHORIZATION_BOUNDARY_CHANGED");
+      assert.deepEqual(admissionDispatches, []);
+    });
+  }
+});
 
 test("retry: cancelling request ownership prevents late database commit and broadcast", async () => {
   databaseWrites.length = 0;

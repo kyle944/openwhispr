@@ -33,6 +33,13 @@ const gateMocks = {
       kind: 'ready', managed: false, settings,
     });
     export const isManagedLocalTranscriptionRuntimeAllowed = () => true;
+    export const captureManagedRuntimeAuthorizationContext = (route) => ({
+      accountId: null,
+      workspaceId: null,
+      authGeneration: null,
+      configGeneration: null,
+      ...route,
+    });
   `,
   runtimeAuthorizationBoundary: `
     export const captureRuntimeAuthorizationLease = (_domains, onChanged) => {

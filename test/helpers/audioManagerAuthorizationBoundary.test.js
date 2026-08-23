@@ -30,6 +30,13 @@ test("batch preview starts the exact managed transcription model", async (t) => 
           managed: true,
           settings: globalThis.__managedPreviewSettings,
         });
+        export const captureManagedRuntimeAuthorizationContext = (route) => ({
+          accountId: 'account-a',
+          workspaceId: 'workspace-a',
+          authGeneration: 4,
+          configGeneration: 5,
+          ...route,
+        });
         export const isManagedLocalTranscriptionRuntimeAllowed = (resolution) =>
           resolution.kind === 'ready';
       `,
@@ -74,7 +81,8 @@ test("batch preview starts the exact managed transcription model", async (t) => 
   });
 
   const previewStarts = [];
-  window.electronAPI.startDictationPreview = (options) => previewStarts.push(options);
+  window.electronAPI.startDictationPreview = (options, context) =>
+    previewStarts.push({ options, context });
   const track = {
     label: "test mic",
     muted: false,
@@ -108,10 +116,21 @@ test("batch preview starts the exact managed transcription model", async (t) => 
   assert.equal(await manager.startRecording(), true);
   assert.deepEqual(previewStarts, [
     {
-      provider: "nvidia",
-      model: "managed-model-b",
-      language: "en",
-      display: true,
+      options: {
+        provider: "nvidia",
+        model: "managed-model-b",
+        language: "en",
+        display: true,
+      },
+      context: {
+        accountId: "account-a",
+        workspaceId: "workspace-a",
+        authGeneration: 4,
+        configGeneration: 5,
+        managed: true,
+        provider: "nvidia",
+        model: "managed-model-b",
+      },
     },
   ]);
 });

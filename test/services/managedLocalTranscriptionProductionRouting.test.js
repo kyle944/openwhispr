@@ -64,8 +64,8 @@ test("file upload sends the exact managed local provider and model despite stale
     initialStorage: managedBindingStorage(),
     window: {
       electronAPI: {
-        transcribeAudioFile: async (filePath, options) => {
-          localCalls.push({ filePath, options });
+        transcribeAudioFile: async (filePath, options, context) => {
+          localCalls.push({ filePath, options, context });
           return { success: true, text: "managed local" };
         },
         transcribeAudioFileCloud: async () => {
@@ -102,6 +102,13 @@ test("file upload sends the exact managed local provider and model despite stale
         model: selection.modelId,
         requestId: "upload-request-1",
       },
+      context: {
+        ...identity,
+        configGeneration: 5,
+        managed: true,
+        provider: "nvidia",
+        model: selection.modelId,
+      },
     },
   ]);
 });
@@ -128,12 +135,12 @@ test("meeting prepare and start send the exact managed local provider and model"
     initialStorage: managedBindingStorage(),
     window: {
       electronAPI: {
-        meetingTranscriptionPrepare: async (options) => {
-          preparedOptions.push(options);
+        meetingTranscriptionPrepare: async (options, context) => {
+          preparedOptions.push({ options, context });
           return { success: true };
         },
-        meetingTranscriptionStart: async (options) => {
-          startedOptions.push(options);
+        meetingTranscriptionStart: async (options, context) => {
+          startedOptions.push({ options, context });
           return { success: false, error: "stop after routing assertion" };
         },
         checkSystemAudioAccess: async () => ({
@@ -187,21 +194,30 @@ test("meeting prepare and start send the exact managed local provider and model"
 
   assert.deepEqual(preparedOptions, [
     {
-      provider: "local",
-      localProvider: "nvidia",
-      localModel: selection.modelId,
-      language: "en",
+      options: {
+        provider: "local",
+        localProvider: "nvidia",
+        localModel: selection.modelId,
+        language: "en",
+      },
+      context: {
+        ...identity,
+        configGeneration: 5,
+        managed: true,
+        provider: "nvidia",
+        model: selection.modelId,
+      },
     },
   ]);
   assert.equal(startedOptions.length, 1);
   assert.deepEqual(
     {
-      provider: startedOptions[0].provider,
-      localProvider: startedOptions[0].localProvider,
-      localModel: startedOptions[0].localModel,
-      language: startedOptions[0].language,
-      noteId: startedOptions[0].noteId,
-      autoEndEligible: startedOptions[0].autoEndEligible,
+      provider: startedOptions[0].options.provider,
+      localProvider: startedOptions[0].options.localProvider,
+      localModel: startedOptions[0].options.localModel,
+      language: startedOptions[0].options.language,
+      noteId: startedOptions[0].options.noteId,
+      autoEndEligible: startedOptions[0].options.autoEndEligible,
     },
     {
       provider: "local",
@@ -212,6 +228,13 @@ test("meeting prepare and start send the exact managed local provider and model"
       autoEndEligible: false,
     }
   );
-  assert.equal(typeof startedOptions[0].sessionId, "string");
-  assert.notEqual(startedOptions[0].sessionId, "");
+  assert.equal(typeof startedOptions[0].options.sessionId, "string");
+  assert.notEqual(startedOptions[0].options.sessionId, "");
+  assert.deepEqual(startedOptions[0].context, {
+    ...identity,
+    configGeneration: 5,
+    managed: true,
+    provider: "nvidia",
+    model: selection.modelId,
+  });
 });

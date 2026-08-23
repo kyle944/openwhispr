@@ -57,6 +57,7 @@ import {
 import { TINFOIL_PROXY_REQUIRED_ERROR } from "../services/transcriptionBaseUrl";
 import { resolveByokModel, resolveTranscriptionRoute } from "./transcriptionRoute.ts";
 import {
+  captureManagedRuntimeAuthorizationContext,
   isManagedLocalTranscriptionRuntimeAllowed,
   resolveManagedLocalTranscriptionRuntime,
 } from "./managedLocalTranscriptionRuntime.ts";
@@ -311,8 +312,10 @@ const cancelledOperationError = () => {
 // fails closed on an options object that lost the tag (#1624).
 const makeDictationRealtimeProvider = (id) => ({
   awaitsFinalTranscript: true,
-  warmup: (opts) => window.electronAPI.dictationRealtimeWarmup({ ...opts, provider: id }),
-  start: (opts) => window.electronAPI.dictationRealtimeStart({ ...opts, provider: id }),
+  warmup: (opts, context) =>
+    window.electronAPI.dictationRealtimeWarmup({ ...opts, provider: id }, context),
+  start: (opts, context) =>
+    window.electronAPI.dictationRealtimeStart({ ...opts, provider: id }, context),
   send: (buf) => window.electronAPI.dictationRealtimeSend(buf),
   stop: () => window.electronAPI.dictationRealtimeStop(),
   abort: () => window.electronAPI.dictationStreamingAbort(),
@@ -324,8 +327,8 @@ const makeDictationRealtimeProvider = (id) => ({
 
 const STREAMING_PROVIDERS = {
   deepgram: {
-    warmup: (opts) => window.electronAPI.deepgramStreamingWarmup(opts),
-    start: (opts) => window.electronAPI.deepgramStreamingStart(opts),
+    warmup: (opts, context) => window.electronAPI.deepgramStreamingWarmup(opts, context),
+    start: (opts, context) => window.electronAPI.deepgramStreamingStart(opts, context),
     send: (buf) => window.electronAPI.deepgramStreamingSend(buf),
     finalize: () => window.electronAPI.deepgramStreamingFinalize(),
     stop: () => window.electronAPI.deepgramStreamingStop(),
@@ -337,8 +340,8 @@ const STREAMING_PROVIDERS = {
     onSessionEnd: (cb) => window.electronAPI.onDeepgramSessionEnd(cb),
   },
   assemblyai: {
-    warmup: (opts) => window.electronAPI.assemblyAiStreamingWarmup(opts),
-    start: (opts) => window.electronAPI.assemblyAiStreamingStart(opts),
+    warmup: (opts, context) => window.electronAPI.assemblyAiStreamingWarmup(opts, context),
+    start: (opts, context) => window.electronAPI.assemblyAiStreamingStart(opts, context),
     send: (buf) => window.electronAPI.assemblyAiStreamingSend(buf),
     finalize: () => window.electronAPI.assemblyAiStreamingForceEndpoint(),
     stop: () => window.electronAPI.assemblyAiStreamingStop(),
@@ -351,8 +354,8 @@ const STREAMING_PROVIDERS = {
   },
   "openai-realtime": makeDictationRealtimeProvider("openai-realtime"),
   corti: {
-    warmup: (opts) => window.electronAPI.cortiStreamingWarmup(opts),
-    start: (opts) => window.electronAPI.cortiStreamingStart(opts),
+    warmup: (opts, context) => window.electronAPI.cortiStreamingWarmup(opts, context),
+    start: (opts, context) => window.electronAPI.cortiStreamingStart(opts, context),
     send: (buf) => window.electronAPI.cortiStreamingSend(buf),
     finalize: () => window.electronAPI.cortiStreamingFinalize(),
     stop: () => window.electronAPI.cortiStreamingStop(),
@@ -1333,16 +1336,24 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
           const provider = isNvidia ? "nvidia" : "whisper";
           const model = isNvidia ? parakeetModel : whisperModel;
           const language = getBaseLanguageCode(preferredLanguage);
-          authorization.assertCurrent();
-          window.electronAPI?.startDictationPreview?.({
+          const managedRuntimeContext = captureManagedRuntimeAuthorizationContext({
+            managed: transcriptionRuntime.managed,
             provider,
             model,
-            language,
-            display: shouldDisplayDictationPreview(
-              showTranscriptionPreview,
-              this.voiceAgentRequested
-            ),
           });
+          authorization.assertCurrent();
+          window.electronAPI?.startDictationPreview?.(
+            {
+              provider,
+              model,
+              language,
+              display: shouldDisplayDictationPreview(
+                showTranscriptionPreview,
+                this.voiceAgentRequested
+              ),
+            },
+            managedRuntimeContext
+          );
           this._streamingCommitActive = streamingCommit;
         } catch (e) {
           logger.warn("Preview worklet setup failed", { error: e.message }, "audio");
@@ -1869,7 +1880,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
             audioBlob,
             parakeetModel,
             metadata,
-            wasCancelled
+            wasCancelled,
+            runtime.managed
           );
         } else {
           activeModel = whisperModel;
@@ -1877,7 +1889,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
             audioBlob,
             whisperModel,
             metadata,
-            wasCancelled
+            wasCancelled,
+            runtime.managed
           );
         }
       } else if (isOpenWhisprCloudMode) {
@@ -1999,7 +2012,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     audioBlob,
     model = "base",
     metadata = {},
-    wasCancelled = neverCancelled
+    wasCancelled = neverCancelled,
+    managed = false
   ) {
     const timings = {};
 
@@ -2030,7 +2044,16 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       );
 
       const transcriptionStart = performance.now();
-      let result = await window.electronAPI.transcribeLocalWhisper(arrayBuffer, options);
+      const managedRuntimeContext = captureManagedRuntimeAuthorizationContext({
+        managed,
+        provider: "whisper",
+        model,
+      });
+      let result = await window.electronAPI.transcribeLocalWhisper(
+        arrayBuffer,
+        options,
+        managedRuntimeContext
+      );
       if (wasCancelled()) throw cancelledOperationError();
       timings.transcriptionProcessingDurationMs = Math.round(
         performance.now() - transcriptionStart
@@ -2052,11 +2075,15 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
           // without the prompt and without VAD: real speech comes back as the
           // true transcript, true silence comes back empty.
           if (wasCancelled()) throw cancelledOperationError();
-          const retry = await window.electronAPI.transcribeLocalWhisper(arrayBuffer, {
-            model: options.model,
-            ...(options.language ? { language: options.language } : {}),
-            skipVad: true,
-          });
+          const retry = await window.electronAPI.transcribeLocalWhisper(
+            arrayBuffer,
+            {
+              model: options.model,
+              ...(options.language ? { language: options.language } : {}),
+              skipVad: true,
+            },
+            managedRuntimeContext
+          );
           if (wasCancelled()) throw cancelledOperationError();
           if (!retry?.success || !retry.text?.trim() || this.isDictionaryEcho(retry.text)) {
             throw dictionaryEchoError();
@@ -2133,7 +2160,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     audioBlob,
     model = "parakeet-tdt-0.6b-v3",
     metadata = {},
-    wasCancelled = neverCancelled
+    wasCancelled = neverCancelled,
+    managed = false
   ) {
     const timings = {};
 
@@ -2161,7 +2189,15 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         );
 
         const transcriptionStart = performance.now();
-        result = await window.electronAPI.transcribeLocalParakeet(arrayBuffer, { model });
+        result = await window.electronAPI.transcribeLocalParakeet(
+          arrayBuffer,
+          { model },
+          captureManagedRuntimeAuthorizationContext({
+            managed,
+            provider: "nvidia",
+            model,
+          })
+        );
         if (wasCancelled()) throw cancelledOperationError();
         timings.transcriptionProcessingDurationMs = Math.round(
           performance.now() - transcriptionStart
@@ -3099,7 +3135,15 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     const transcriptionStart = performance.now();
     const result = await withSessionRefresh(async () => {
       if (wasCancelled()) throw cancelledOperationError();
-      const res = await window.electronAPI.cloudTranscribe(arrayBuffer, opts);
+      const res = await window.electronAPI.cloudTranscribe(
+        arrayBuffer,
+        opts,
+        captureManagedRuntimeAuthorizationContext({
+          managed: false,
+          provider: "openwhispr",
+          model: null,
+        })
+      );
       if (!res.success) {
         const err = new Error(res.error || "Cloud transcription failed");
         err.code = res.code;
@@ -3321,6 +3365,11 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
               .map((t) => t.trim().slice(0, 50))
               .filter(Boolean)
               .slice(0, 100),
+          }),
+          captureManagedRuntimeAuthorizationContext({
+            managed: false,
+            provider,
+            model: provider === "tinfoil" ? null : model,
           })
         );
         if (result?.error) {
@@ -3620,7 +3669,15 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
             options.language = language;
           }
 
-          const result = await window.electronAPI.transcribeLocalWhisper(arrayBuffer, options);
+          const result = await window.electronAPI.transcribeLocalWhisper(
+            arrayBuffer,
+            options,
+            captureManagedRuntimeAuthorizationContext({
+              managed: false,
+              provider: "whisper",
+              model: fallbackModel,
+            })
+          );
 
           if (result.success && result.text) {
             const text = await this.processTranscription(
@@ -3929,13 +3986,20 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         withSessionRefresh(async () => {
           authorization.assertCurrent();
           const settings = getSettings();
+          const options = buildStreamingSessionOptions({
+            providerName,
+            settings,
+            language: settings.preferredLanguage,
+            keyterms: this.getKeyterms(),
+            voiceAgentRequested: this.voiceAgentRequested,
+          });
+          const runtime = resolveManagedLocalTranscriptionRuntime(settings);
           const res = await provider.warmup(
-            buildStreamingSessionOptions({
-              providerName,
-              settings,
-              language: settings.preferredLanguage,
-              keyterms: this.getKeyterms(),
-              voiceAgentRequested: this.voiceAgentRequested,
+            options,
+            captureManagedRuntimeAuthorizationContext({
+              managed: runtime.kind === "ready" && runtime.managed,
+              provider: providerName,
+              model: options.model || (providerName === "corti" ? "corti-transcribe" : null),
             })
           );
           // Throw error to trigger retry if AUTH_EXPIRED
@@ -4293,13 +4357,21 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         authorization.assertCurrent();
         const streamingSettings = getSettings();
         const { useLocalWhisper } = streamingSettings;
+        const activeProviderName = this.getStreamingProviderName();
+        const options = buildStreamingSessionOptions({
+          providerName: activeProviderName,
+          settings: streamingSettings,
+          language: this.getEffectiveSttLanguage(streamingSettings),
+          keyterms: this.getKeyterms(),
+          voiceAgentRequested: this.voiceAgentRequested,
+        });
+        const runtime = resolveManagedLocalTranscriptionRuntime(streamingSettings);
         const res = await provider.start(
-          buildStreamingSessionOptions({
-            providerName: this.getStreamingProviderName(),
-            settings: streamingSettings,
-            language: this.getEffectiveSttLanguage(streamingSettings),
-            keyterms: this.getKeyterms(),
-            voiceAgentRequested: this.voiceAgentRequested,
+          options,
+          captureManagedRuntimeAuthorizationContext({
+            managed: runtime.kind === "ready" && runtime.managed,
+            provider: activeProviderName,
+            model: options.model || (activeProviderName === "corti" ? "corti-transcribe" : null),
           })
         );
         authorization.assertCurrent();
@@ -4967,13 +5039,15 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
                       fallbackBlob,
                       runtime.settings.parakeetModel,
                       { durationSeconds },
-                      wasCancelled
+                      wasCancelled,
+                      runtime.managed
                     )
                   : await this.processWithLocalWhisper(
                       fallbackBlob,
                       runtime.kind === "ready" ? runtime.settings.whisperModel : undefined,
                       { durationSeconds },
-                      wasCancelled
+                      wasCancelled,
+                      runtime.kind === "ready" && runtime.managed
                     )
                 : await this.processWithOpenAIAPI(fallbackBlob, { durationSeconds }, wasCancelled);
           if (wasCancelled()) return true;
