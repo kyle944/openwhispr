@@ -116,6 +116,10 @@ interface MeetingRecordingState {
 
 const MEETING_AUDIO_BUFFER_SIZE = 800;
 const MEETING_STOP_FLUSH_TIMEOUT_MS = 50;
+// Long meetings may diarize well after stop, but orphaned completions must not
+// retain authorization snapshots for the renderer's full lifetime.
+const DIARIZATION_AUTHORIZATION_RETENTION_MS = 6 * 60 * 60 * 1000;
+const DIARIZATION_PREBIND_RETENTION_MS = 60 * 1000;
 const MEETING_MIC_PRIMARY_AUDIO_CONSTRAINTS = {
   echoCancellation: false,
   noiseSuppression: false,
@@ -447,6 +451,96 @@ let systemPartialSpeakerIdValue: string | null = null;
 let recentSystemSpeaker: RecentSystemSpeaker | null = null;
 let speakerLocks: Map<string, string> = new Map();
 let pushConfigTimeout: ReturnType<typeof setTimeout> | null = null;
+let transcriptionAuthorizationGeneration = 0;
+
+interface DiarizationAuthorizationBinding {
+  generation: number;
+  guard: ReturnType<typeof captureRuntimeAuthorizationGuard>;
+  retentionTimeout: ReturnType<typeof setTimeout>;
+}
+
+type MeetingDiarizationCompletionData = Parameters<
+  Parameters<NonNullable<typeof window.electronAPI.onMeetingDiarizationComplete>>[0]
+>[0];
+
+interface PendingDiarizationCompletion {
+  data: MeetingDiarizationCompletionData;
+  retentionTimeout: ReturnType<typeof setTimeout>;
+}
+
+const diarizationAuthorizationBindings = new Map<string, DiarizationAuthorizationBinding>();
+const pendingDiarizationCompletions = new Map<string, PendingDiarizationCompletion>();
+let dispatchPendingDiarizationCompletion:
+  ((data: MeetingDiarizationCompletionData) => void) | null = null;
+
+function deletePendingDiarizationCompletion(
+  sessionId: string,
+  pending: PendingDiarizationCompletion
+): void {
+  if (pendingDiarizationCompletions.get(sessionId) !== pending) return;
+  clearTimeout(pending.retentionTimeout);
+  pendingDiarizationCompletions.delete(sessionId);
+}
+
+function queuePendingDiarizationCompletion(
+  sessionId: string,
+  data: MeetingDiarizationCompletionData
+): void {
+  if (pendingDiarizationCompletions.has(sessionId)) return;
+  const pending: PendingDiarizationCompletion = {
+    data,
+    retentionTimeout: setTimeout(() => {
+      deletePendingDiarizationCompletion(sessionId, pending);
+    }, DIARIZATION_PREBIND_RETENTION_MS),
+  };
+  pendingDiarizationCompletions.set(sessionId, pending);
+}
+
+function deleteDiarizationAuthorizationBinding(
+  sessionId: string,
+  binding: DiarizationAuthorizationBinding
+): void {
+  if (diarizationAuthorizationBindings.get(sessionId) !== binding) return;
+  clearTimeout(binding.retentionTimeout);
+  diarizationAuthorizationBindings.delete(sessionId);
+}
+
+function bindDiarizationAuthorization(
+  sessionId: string,
+  guard: ReturnType<typeof captureRuntimeAuthorizationGuard>
+): void {
+  const previous = diarizationAuthorizationBindings.get(sessionId);
+  if (previous) clearTimeout(previous.retentionTimeout);
+  const binding: DiarizationAuthorizationBinding = {
+    generation: transcriptionAuthorizationGeneration,
+    guard,
+    retentionTimeout: setTimeout(() => {
+      deleteDiarizationAuthorizationBinding(sessionId, binding);
+    }, DIARIZATION_AUTHORIZATION_RETENTION_MS),
+  };
+  diarizationAuthorizationBindings.set(sessionId, binding);
+  const pending = pendingDiarizationCompletions.get(sessionId);
+  if (pending) {
+    deletePendingDiarizationCompletion(sessionId, pending);
+    dispatchPendingDiarizationCompletion?.(pending.data);
+  }
+}
+
+function isDiarizationAuthorizationCurrent(binding: DiarizationAuthorizationBinding): boolean {
+  return binding.generation === transcriptionAuthorizationGeneration && binding.guard.isCurrent();
+}
+
+function invalidateDiarizationAuthorizations(): void {
+  transcriptionAuthorizationGeneration += 1;
+  for (const binding of diarizationAuthorizationBindings.values()) {
+    clearTimeout(binding.retentionTimeout);
+  }
+  diarizationAuthorizationBindings.clear();
+  for (const pending of pendingDiarizationCompletions.values()) {
+    clearTimeout(pending.retentionTimeout);
+  }
+  pendingDiarizationCompletions.clear();
+}
 
 export const useMeetingRecordingStore = create<MeetingRecordingState>()(() => ({
   isRecording: false,
@@ -1651,6 +1745,13 @@ export async function stopRecording(expectedSessionId?: string): Promise<StopRec
           return stoppedDiarizationSessionId;
         },
       });
+      if (diarizationSessionId) {
+        authorization.assertCurrent();
+        bindDiarizationAuthorization(
+          diarizationSessionId,
+          captureRuntimeAuthorizationGuard("transcription")
+        );
+      }
     } catch (error) {
       if (!isRuntimeAuthorizationError(error)) throw error;
     } finally {
@@ -1704,6 +1805,7 @@ export function cancelPreparedTranscription(): void {
 
 if (typeof window !== "undefined") {
   subscribeRuntimeAuthorizationBoundary("transcription", () => {
+    invalidateDiarizationAuthorizations();
     void abortForAuthorizationBoundary().catch((error) => {
       logger.warn(
         "Meeting transcription authorization abort failed",
@@ -1722,8 +1824,19 @@ if (typeof window !== "undefined") {
   // getNote await and overwrite each other's speaker labels — the later
   // result merges on top of the earlier one's persisted transcript.
   const enqueueDiarizationCompletion = createSerialQueue();
-  window.electronAPI?.onMeetingDiarizationComplete?.((data) => {
+  const handleDiarizationCompletion = (data: MeetingDiarizationCompletionData): void => {
+    const sessionId = typeof data?.sessionId === "string" ? data.sessionId : null;
+    if (!sessionId) return;
+    if (!diarizationAuthorizationBindings.has(sessionId)) {
+      queuePendingDiarizationCompletion(sessionId, data);
+      return;
+    }
     enqueueDiarizationCompletion(async () => {
+      const binding = diarizationAuthorizationBindings.get(sessionId);
+      if (!binding) return;
+      deleteDiarizationAuthorizationBinding(sessionId, binding);
+      if (!isDiarizationAuthorizationCurrent(binding)) return;
+
       const {
         diarizationSessionId,
         recordingNoteId,
@@ -1731,7 +1844,7 @@ if (typeof window !== "undefined") {
       } = useMeetingRecordingStore.getState();
       const { targetNoteId, isCurrentSession } = resolveDiarizationTarget({
         payloadNoteId: data?.noteId,
-        payloadSessionId: data?.sessionId,
+        payloadSessionId: sessionId,
         currentSessionId: diarizationSessionId,
       });
       if (targetNoteId == null) return;
@@ -1751,6 +1864,7 @@ if (typeof window !== "undefined") {
         return;
       }
 
+      if (!isDiarizationAuthorizationCurrent(binding)) return;
       let persisted: NoteItem | null | undefined;
       try {
         persisted = await window.electronAPI?.getNote?.(targetNoteId);
@@ -1761,6 +1875,7 @@ if (typeof window !== "undefined") {
           "meeting"
         );
       }
+      if (!isDiarizationAuthorizationCurrent(binding)) return;
       // No note means no safe base to merge into, and writing to a deleted one
       // would resurrect its tombstone in the sidebar, cloud mirror, and vector
       // index.
@@ -1785,6 +1900,7 @@ if (typeof window !== "undefined") {
         }))
       );
 
+      if (!isDiarizationAuthorizationCurrent(binding)) return;
       try {
         // Awaited so the next queued completion's getNote is guaranteed to
         // read this write — without it the ordering depends on db-update-note
@@ -1793,12 +1909,14 @@ if (typeof window !== "undefined") {
           transcript: serializeTranscriptSegments(enriched),
         });
       } catch (error) {
-        publish([]);
+        if (isDiarizationAuthorizationCurrent(binding)) publish([]);
         throw error;
       }
+      if (!isDiarizationAuthorizationCurrent(binding)) return;
       publish(enriched);
 
       if (data.speakerEmbeddings) {
+        if (!isDiarizationAuthorizationCurrent(binding)) return;
         await window.electronAPI?.saveNoteSpeakerEmbeddings?.(targetNoteId, data.speakerEmbeddings);
       }
     }).catch((error) => {
@@ -1808,7 +1926,9 @@ if (typeof window !== "undefined") {
         "meeting"
       );
     });
-  });
+  };
+  dispatchPendingDiarizationCompletion = handleDiarizationCompletion;
+  window.electronAPI?.onMeetingDiarizationComplete?.(handleDiarizationCompletion);
 }
 
 // Throttled resize listener — keeps layout reflows during drag from thrashing

@@ -49,6 +49,16 @@ function assertExactIdentity(context, result) {
   }
 }
 
+function isClearedUnmanagedIdentityContext(context) {
+  return (
+    context?.accountId === null &&
+    context.workspaceId === null &&
+    context.authGeneration === null &&
+    context.configGeneration === null &&
+    context.managed === false
+  );
+}
+
 async function authorizeManagedTranscriptionStart({ context, route, enterpriseIdentityManager }) {
   const authState = enterpriseIdentityManager.getAuthState();
   if (!authState.authenticated) {
@@ -69,7 +79,9 @@ async function authorizeManagedTranscriptionStart({ context, route, enterpriseId
     return { managed: false, binding: createBinding(context, route, false) };
   }
 
-  if (context?.accountId && !context.workspaceId) {
+  const activeIdentity = enterpriseIdentityManager.getActiveIdentity?.() ?? null;
+  if (activeIdentity === null && isClearedUnmanagedIdentityContext(context)) {
+    assertExactRoute(context, route);
     throw authorizationError(
       MANAGED_WORKSPACE_REQUIRED,
       "An active workspace is required for managed transcription."
@@ -89,7 +101,6 @@ async function authorizeManagedTranscriptionStart({ context, route, enterpriseId
   }
   assertExactRoute(context, route);
 
-  const activeIdentity = enterpriseIdentityManager.getActiveIdentity?.() ?? null;
   if (
     !activeIdentity ||
     typeof activeIdentity.accountId !== "string" ||

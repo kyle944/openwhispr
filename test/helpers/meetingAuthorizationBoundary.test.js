@@ -104,6 +104,72 @@ function installUnavailableMicrophone(t) {
   });
 }
 
+async function createDiarizationHarness(t, overrides = {}) {
+  const noteUpdates = [];
+  const embeddingWrites = [];
+  let completionCallback;
+  let stopIndex = 0;
+  installUnavailableMicrophone(t);
+  installBrowserGlobals(t, {
+    window: {
+      electronAPI: {
+        checkSystemAudioAccess: async () => nativeSystemAudioAccess,
+        meetingTranscriptionStart: async ({ sessionId }) => ({
+          success: true,
+          sessionId,
+          systemAudioMode: "native",
+          systemAudioStrategy: "native",
+        }),
+        meetingTranscriptionStop: async () => {
+          const result = {
+            success: true,
+            transcript: "main transcript",
+            diarizationSessionId: (overrides.sessionIds ?? ["diar-a"])[stopIndex++],
+          };
+          await overrides.beforeStopResult?.(result, completionCallback);
+          return result;
+        },
+        meetingTranscriptionCancel: async () => ({ success: true }),
+        meetingTranscriptionAbort: async () => ({ success: true }),
+        getNote:
+          overrides.getNote ??
+          (async (noteId) => ({
+            id: noteId,
+            transcript: JSON.stringify([{ text: "base", source: "system" }]),
+          })),
+        updateNote: async (...args) => {
+          noteUpdates.push(args);
+          await overrides.onUpdateNote?.(...args);
+          return { success: true };
+        },
+        saveNoteSpeakerEmbeddings: async (...args) => {
+          embeddingWrites.push(args);
+          await overrides.onSaveEmbeddings?.(...args);
+          return { success: true };
+        },
+        onMeetingDiarizationComplete: (callback) => {
+          completionCallback = callback;
+          return () => {};
+        },
+      },
+    },
+  });
+  const vite = await createRendererServer(t, {
+    cachePrefix: `openwhispr-meeting-diarization-boundary-${Math.random()}-`,
+  });
+  const meeting = await vite.ssrLoadModule("/stores/meetingRecordingStore.ts");
+  const { usePolicyStore } = await vite.ssrLoadModule("/stores/policyStore.ts");
+  usePolicyStore.setState({ status: "unmanaged", appVersion: "1.8.4", policy: null });
+  assert.equal(typeof completionCallback, "function");
+  return {
+    meeting,
+    usePolicyStore,
+    noteUpdates,
+    embeddingWrites,
+    completeDiarization: (data) => completionCallback(data),
+  };
+}
+
 test("authorization abort overtakes graceful meeting stop before transcript persistence", async (t) => {
   const stopping = createDeferred();
   const stopCalls = [];
@@ -213,4 +279,108 @@ test("an ordinary meeting stop still persists the captured transcript", async (t
   assert.deepEqual(JSON.parse(noteUpdates[0][1].transcript), [
     { text: "kept segment", source: "system" },
   ]);
+});
+
+test("delayed meeting diarization persists while its stop authorization is unchanged", async (t) => {
+  const harness = await createDiarizationHarness(t, {
+    beforeStopResult: (_result, completeDiarization) => {
+      completeDiarization({
+        sessionId: "diar-a",
+        noteId: 43,
+        segments: [{ id: "diarized-1", text: "base", source: "system", speaker: "SPEAKER_00" }],
+        speakerEmbeddings: { SPEAKER_00: [0.1, 0.2] },
+      });
+    },
+  });
+  await harness.meeting.startRecording({
+    noteId: 43,
+    noteTitle: "Authorized diarization",
+    folderId: null,
+    seedSegments: [{ id: "segment-1", text: "base", source: "system" }],
+    autoEndEligible: false,
+  });
+  await harness.meeting.stopRecording();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(harness.noteUpdates.length, 2);
+  assert.equal(harness.noteUpdates[1][0], 43);
+  assert.deepEqual(harness.embeddingWrites, [[43, { SPEAKER_00: [0.1, 0.2] }]]);
+});
+
+test("authorization changing during delayed diarization lookup prevents every persistence", async (t) => {
+  const noteLookup = createDeferred();
+  let getNoteCalls = 0;
+  const harness = await createDiarizationHarness(t, {
+    getNote: async () => {
+      getNoteCalls += 1;
+      return noteLookup.promise;
+    },
+  });
+  await harness.meeting.startRecording({
+    noteId: 44,
+    noteTitle: "Revoked diarization",
+    folderId: null,
+    seedSegments: [{ id: "segment-1", text: "base", source: "system" }],
+    autoEndEligible: false,
+  });
+  await harness.meeting.stopRecording();
+  harness.noteUpdates.length = 0;
+
+  harness.completeDiarization({
+    sessionId: "diar-a",
+    noteId: 44,
+    segments: [{ id: "diarized-1", text: "base", source: "system", speaker: "SPEAKER_00" }],
+    speakerEmbeddings: { SPEAKER_00: [0.1, 0.2] },
+  });
+  while (getNoteCalls === 0) await Promise.resolve();
+  harness.usePolicyStore.setState({
+    status: "managed",
+    appVersion: "1.8.4",
+    policy: blockedPolicy,
+  });
+  noteLookup.resolve({
+    id: 44,
+    transcript: JSON.stringify([{ text: "base", source: "system" }]),
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(harness.noteUpdates, []);
+  assert.deepEqual(harness.embeddingWrites, []);
+});
+
+test("meeting A diarization still targets A after meeting B starts under the same authorization", async (t) => {
+  const completionFinished = createDeferred();
+  let waitingForCompletion = false;
+  const harness = await createDiarizationHarness(t, {
+    onUpdateNote: (noteId) => {
+      if (waitingForCompletion && noteId === 45) completionFinished.resolve();
+    },
+  });
+  await harness.meeting.startRecording({
+    noteId: 45,
+    noteTitle: "Meeting A",
+    folderId: null,
+    seedSegments: [{ id: "segment-a", text: "meeting A", source: "system" }],
+    autoEndEligible: false,
+  });
+  await harness.meeting.stopRecording();
+  harness.noteUpdates.length = 0;
+  waitingForCompletion = true;
+  await harness.meeting.startRecording({
+    noteId: 46,
+    noteTitle: "Meeting B",
+    folderId: null,
+    seedSegments: [{ id: "segment-b", text: "meeting B", source: "system" }],
+    autoEndEligible: false,
+  });
+
+  harness.completeDiarization({
+    sessionId: "diar-a",
+    noteId: 45,
+    segments: [{ id: "diarized-a", text: "meeting A", source: "system", speaker: "SPEAKER_00" }],
+  });
+  await completionFinished.promise;
+
+  assert.equal(harness.noteUpdates.length, 1);
+  assert.equal(harness.noteUpdates[0][0], 45);
 });

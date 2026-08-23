@@ -173,6 +173,48 @@ test("an Enterprise-plan downgrade clears prior managed enforcement", async (t) 
   assert.equal(snapshots.at(-1).enforcementRequired, false);
 });
 
+test("a definitive unmanaged verdict survives manager recreation and a transient failure", async (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openwhispr-enterprise-"));
+  t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));
+  const cachePath = path.join(tempDir, "config.json");
+  const tokenStore = { getState: () => ({ token: "session", generation: 4 }) };
+  const firstManager = createEnterpriseIdentityManager({
+    cachePath,
+    getApiUrl: () => "https://api.example.com",
+    getAppVersion: () => "1.8.1",
+    proxyFetch: async () =>
+      jsonResponse(
+        { error: "An active Enterprise workspace is required", code: "ENTERPRISE_REQUIRED" },
+        403
+      ),
+    tokenStore,
+  });
+
+  const definitiveVerdict = await firstManager.getConfig(request());
+  assert.equal(definitiveVerdict.success, false);
+  assert.equal(definitiveVerdict.enforcementRequired, false);
+
+  const secondManager = createEnterpriseIdentityManager({
+    cachePath,
+    getApiUrl: () => "https://api.example.com",
+    getAppVersion: () => "1.8.1",
+    proxyFetch: async () => {
+      throw new Error("offline");
+    },
+    tokenStore,
+  });
+  const recoveredVerdict = await secondManager.getConfig(request());
+
+  assert.equal(recoveredVerdict.success, false);
+  assert.equal(recoveredVerdict.enforcementRequired, false);
+  const otherWorkspaceVerdict = await secondManager.getConfig(
+    request({ workspaceId: "22222222-2222-4222-8222-222222222222" })
+  );
+  assert.equal(otherWorkspaceVerdict.enforcementRequired, undefined);
+  secondManager.clear();
+  assert.equal(fs.existsSync(cachePath), false);
+});
+
 test("a malformed successful config response fails closed instead of using disk cache", async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openwhispr-enterprise-"));
   t.after(() => fs.rmSync(tempDir, { recursive: true, force: true }));

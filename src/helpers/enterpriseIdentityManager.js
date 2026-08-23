@@ -59,10 +59,15 @@ function readCache(cachePath) {
   }
 }
 
-function writeCache(cachePath, identity, config) {
+function writeCache(cachePath, identity, config, enforcementRequired) {
   const envelope = readCache(cachePath);
   const entries = envelope.entries.filter((entry) => entry?.key !== identity.cacheKey);
-  entries.push({ key: identity.cacheKey, workspaceId: identity.workspaceId, config });
+  entries.push({
+    key: identity.cacheKey,
+    workspaceId: identity.workspaceId,
+    config,
+    ...(typeof enforcementRequired === "boolean" ? { enforcementRequired } : {}),
+  });
   fs.writeFileSync(cachePath, JSON.stringify({ version: CONFIG_CACHE_VERSION, entries }), {
     mode: 0o600,
   });
@@ -73,6 +78,17 @@ function cachedConfig(cachePath, identity) {
     (candidate) => candidate?.key === identity.cacheKey
   );
   return validateManagedEnterpriseEnvelope(entry?.config, identity.workspaceId);
+}
+
+function hasCachedDefinitivelyUnmanagedVerdict(cachePath, identity) {
+  const entry = readCache(cachePath).entries.find(
+    (candidate) => candidate?.key === identity.cacheKey
+  );
+  return (
+    entry?.workspaceId === identity.workspaceId &&
+    entry.config === null &&
+    entry.enforcementRequired === false
+  );
 }
 
 function removeCachedConfig(cachePath, identity) {
@@ -174,9 +190,19 @@ function createEnterpriseIdentityManager({
     configs.delete(identity.cacheKey);
     configRequests.delete(identity.cacheKey);
     clearIdentityCredentials(identity);
-    removeCachedConfig(cachePath, identity);
-    if (enforcementRequired === false) definitivelyUnmanaged.add(identity.cacheKey);
-    else definitivelyUnmanaged.delete(identity.cacheKey);
+    if (enforcementRequired === false) {
+      definitivelyUnmanaged.add(identity.cacheKey);
+      try {
+        writeCache(cachePath, identity, null, false);
+      } catch (error) {
+        logger?.warn?.("Managed enterprise verdict cache write failed", {
+          error: error?.message,
+        });
+      }
+    } else {
+      definitivelyUnmanaged.delete(identity.cacheKey);
+      removeCachedConfig(cachePath, identity);
+    }
     broadcast?.({
       accountId: identity.accountId,
       workspaceId: identity.workspaceId,
@@ -360,7 +386,11 @@ function createEnterpriseIdentityManager({
           configs.set(identity.cacheKey, { config: disk, refreshedAt: 0 });
           return { config: disk, status: "cached" };
         }
-        if (definitivelyUnmanaged.has(identity.cacheKey)) {
+        if (
+          definitivelyUnmanaged.has(identity.cacheKey) ||
+          hasCachedDefinitivelyUnmanagedVerdict(cachePath, identity)
+        ) {
+          definitivelyUnmanaged.add(identity.cacheKey);
           error.enforcementRequired = false;
         }
         throw error;

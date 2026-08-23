@@ -111,6 +111,10 @@ test("definitively unmanaged signed-in transcription allows an exact personal ro
 test("identity and generation freshness claims must match main-owned state", async (t) => {
   const cases = [
     { name: "missing account", context: { ...managedContext, accountId: null } },
+    {
+      name: "partial no-workspace claim while main has an active identity",
+      context: { ...managedContext, workspaceId: null, configGeneration: null },
+    },
     { name: "missing active identity", activeIdentity: null },
     {
       name: "stale active workspace",
@@ -159,13 +163,54 @@ test("signed-in transcription without an active workspace remains recoverable", 
     authorize({
       context: {
         ...managedContext,
+        accountId: null,
         workspaceId: null,
+        authGeneration: null,
         configGeneration: null,
         managed: false,
       },
+      enterpriseIdentityManager: createManager({ activeIdentity: null }),
     }),
     { code: "MANAGED_WORKSPACE_REQUIRED" }
   );
+});
+
+test("malformed cleared identity claims remain authorization failures", async (t) => {
+  const clearedContext = {
+    ...managedContext,
+    accountId: null,
+    workspaceId: null,
+    authGeneration: null,
+    configGeneration: null,
+    managed: false,
+  };
+
+  await t.test("managed claim", async () => {
+    await assert.rejects(
+      authorize({
+        context: { ...clearedContext, managed: true },
+        enterpriseIdentityManager: createManager({ activeIdentity: null }),
+      }),
+      { code: "AUTHORIZATION_BOUNDARY_CHANGED" }
+    );
+  });
+
+  await t.test("route mismatch", async () => {
+    await assert.rejects(
+      authorize({
+        context: clearedContext,
+        route: { provider: "whisper", model: "medium" },
+        enterpriseIdentityManager: createManager({ activeIdentity: null }),
+      }),
+      { code: "AUTHORIZATION_BOUNDARY_CHANGED" }
+    );
+  });
+
+  await t.test("main has since bound an active workspace", async () => {
+    await assert.rejects(authorize({ context: clearedContext }), {
+      code: "AUTHORIZATION_BOUNDARY_CHANGED",
+    });
+  });
 });
 
 test("unknown managed configuration fails closed", async (t) => {

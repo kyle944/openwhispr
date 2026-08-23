@@ -396,6 +396,73 @@ test("managed local history retry admits its exact configured route", async () =
   assert.deepEqual(fetches, []);
 });
 
+test("signed-in start without an active workspace fails recoverably before provider dispatch", async () => {
+  tokenState = { token: "signed-in-token", generation: 7 };
+  admissionDispatches.length = 0;
+
+  const result = await handlers.get("transcribe-local-whisper")(
+    { sender: { id: 2 } },
+    new ArrayBuffer(4),
+    { model: "base" },
+    {
+      accountId: null,
+      workspaceId: null,
+      authGeneration: null,
+      configGeneration: null,
+      managed: false,
+      provider: "whisper",
+      model: "base",
+    }
+  );
+
+  assert.equal(result.success, false);
+  assert.equal(result.code, "MANAGED_WORKSPACE_REQUIRED");
+  assert.deepEqual(admissionDispatches, []);
+  assert.deepEqual(fetches, []);
+});
+
+test("a restored unmanaged verdict installs the active identity and admits its exact route", async () => {
+  tokenState = { token: "managed-token", generation: 7 };
+  enterpriseConfigResult = {
+    success: false,
+    status: "error",
+    accountId: "account-a",
+    workspaceId: "workspace-a",
+    authGeneration: 7,
+    code: "MANAGED_CONFIG_FAILED",
+    error: "offline",
+    enforcementRequired: false,
+  };
+  const mainSender = { id: 1 };
+  fakeThis.windowManager.mainWindow = { webContents: mainSender };
+
+  await handlers.get("get-managed-enterprise-config")(
+    { sender: mainSender },
+    "account-a",
+    "workspace-a",
+    7
+  );
+  admissionDispatches.length = 0;
+  const result = await handlers.get("transcribe-local-whisper")(
+    { sender: { id: 2 } },
+    new ArrayBuffer(4),
+    { model: "base" },
+    {
+      accountId: "account-a",
+      workspaceId: "workspace-a",
+      authGeneration: 7,
+      configGeneration: null,
+      managed: false,
+      provider: "whisper",
+      model: "base",
+    }
+  );
+
+  assert.equal(result.success, true);
+  assert.deepEqual(admissionDispatches, ["whisper"]);
+  assert.deepEqual(fetches, []);
+});
+
 test("a late accessible workspace cannot replace the main window's newer active identity", async () => {
   tokenState = { token: "managed-token", generation: 7 };
   const mainSender = { id: 1 };
