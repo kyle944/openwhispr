@@ -294,7 +294,12 @@ export function useChatStreaming({
       let systemPrompt = appendDictionarySuffix(
         getAgentSystemPrompt(
           registry?.getAll().map((t) => t.name),
-          combinedContext || undefined
+          combinedContext || undefined,
+          {
+            mode: chatAgentMode,
+            provider: chatConfig.provider,
+            model: chatConfig.model,
+          }
         ),
         getDictionaryHintWords(settings),
         settings.uiLanguage

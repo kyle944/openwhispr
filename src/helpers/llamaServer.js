@@ -19,8 +19,16 @@ const HEALTH_CHECK_INTERVAL_MS = 5000;
 const HEALTH_CHECK_TIMEOUT_MS = 2000;
 const STARTUP_POLL_INTERVAL_MS = 500;
 const HEALTH_CHECK_FAILURE_THRESHOLD = 3;
-const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_CONTEXT_SIZE = 4096;
+
+function resolveIdleTimeoutMs(env = process.env) {
+  const raw = env.OPENWHISPR_LLAMA_IDLE_TIMEOUT_MS;
+  if (raw === undefined || raw === "") return DEFAULT_IDLE_TIMEOUT_MS;
+
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_IDLE_TIMEOUT_MS;
+}
 
 class LlamaServerManager {
   constructor() {
@@ -38,6 +46,7 @@ class LlamaServerManager {
     this.cachedServerBinaryPaths = null;
     this.activeBackend = null;
     this.idleTimer = null;
+    this.idleTimeoutMs = resolveIdleTimeoutMs();
   }
 
   getServerBinaryPaths() {
@@ -119,7 +128,10 @@ class LlamaServerManager {
   }
 
   async start(modelPath, options = {}) {
-    if (this.startupPromise) return this.startupPromise;
+    if (this.startupPromise) {
+      await this.startupPromise;
+      return this.start(modelPath, options);
+    }
 
     // A change in drafter presence for the same model must still restart the
     // server so the new speculative-decoding flags take effect.
@@ -507,13 +519,14 @@ class LlamaServerManager {
 
   resetIdleTimer() {
     this.clearIdleTimer();
+    if (this.idleTimeoutMs === 0) return;
     this.idleTimer = setTimeout(() => {
       debugLogger.info("llama-server idle timeout reached, stopping to free VRAM", {
-        timeoutMs: IDLE_TIMEOUT_MS,
+        timeoutMs: this.idleTimeoutMs,
         model: this.modelPath ? path.basename(this.modelPath) : null,
       });
       this.stop();
-    }, IDLE_TIMEOUT_MS);
+    }, this.idleTimeoutMs);
   }
 
   clearIdleTimer() {
@@ -672,3 +685,4 @@ class LlamaServerManager {
 }
 
 module.exports = LlamaServerManager;
+module.exports.resolveIdleTimeoutMs = resolveIdleTimeoutMs;

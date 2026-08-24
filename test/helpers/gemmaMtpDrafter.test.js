@@ -157,6 +157,51 @@ test("llama-server start restarts only when model or drafter presence changes", 
   assert.equal(manager.draftModelPath, null);
 });
 
+test("concurrent starts serialize and honor a later different model", async () => {
+  const LlamaServerManager = require("../../src/helpers/llamaServer.js");
+  const manager = new LlamaServerManager();
+  manager.clearIdleTimer();
+
+  let releaseFirst;
+  const firstStarted = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  let enteredFirst;
+  const firstEntered = new Promise((resolve) => {
+    enteredFirst = resolve;
+  });
+  const calls = [];
+  manager._doStart = async (modelPath, options) => {
+    calls.push(modelPath);
+    if (calls.length === 1) {
+      enteredFirst();
+      await firstStarted;
+    }
+    manager.ready = true;
+    manager.modelPath = modelPath;
+    manager.draftModelPath = options.draftModelPath || null;
+  };
+
+  const first = manager.start("/models/a.gguf", {});
+  await firstEntered;
+  const second = manager.start("/models/b.gguf", {});
+  releaseFirst();
+  await Promise.all([first, second]);
+
+  assert.deepEqual(calls, ["/models/a.gguf", "/models/b.gguf"]);
+  assert.equal(manager.modelPath, "/models/b.gguf");
+});
+
+test("llama idle timeout can be disabled for memory-rich local installs", () => {
+  const LlamaServerManager = require("../../src/helpers/llamaServer.js");
+  const { resolveIdleTimeoutMs } = LlamaServerManager;
+
+  assert.equal(resolveIdleTimeoutMs({}), 5 * 60 * 1000);
+  assert.equal(resolveIdleTimeoutMs({ OPENWHISPR_LLAMA_IDLE_TIMEOUT_MS: "0" }), 0);
+  assert.equal(resolveIdleTimeoutMs({ OPENWHISPR_LLAMA_IDLE_TIMEOUT_MS: "900000" }), 900000);
+  assert.equal(resolveIdleTimeoutMs({ OPENWHISPR_LLAMA_IDLE_TIMEOUT_MS: "bad" }), 5 * 60 * 1000);
+});
+
 // --- Degrade ladder for stale (pre-b9763) Vulkan binaries ---
 
 const LADDER_BASE_ARGS = ["--model", "/models/main.gguf", "--host", "127.0.0.1", "--port", "8221"];

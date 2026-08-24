@@ -1,6 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 const { promises: fsPromises } = require("fs");
+const crypto = require("crypto");
 const { app } = require("electron");
 const {
   downloadFile: sharedDownloadFile,
@@ -48,6 +49,11 @@ class ModelManager {
     this.downloadLifecycleVersion = 0;
     this.serverManager = new LlamaServerManager();
     this.currentServerModelId = null;
+    this.promptWarmState = null;
+    this.promptWarmTail = Promise.resolve();
+    this.promptWarmLatestKey = null;
+    this.promptWarmPending = 0;
+    this.promptWarmPayload = null;
     this._initialized = false;
 
     // IMPORTANT: Do NOT call app.getPath() here!
@@ -440,6 +446,19 @@ class ModelManager {
   }
 
   async runInference(modelId, prompt, options = {}) {
+    // Prompt prefill intentionally bypasses LocalReasoningService so it can
+    // overlap speech capture. Canonical inference must wait for that work to
+    // finish, however, or both requests compete for the same Metal-backed
+    // llama server and the user-visible cleanup gets slower.
+    if (!options.isPromptWarmup) {
+      let pendingWarmups = this.promptWarmTail;
+      while (this.promptWarmPending > 0) {
+        await pendingWarmups.catch(() => {});
+        if (pendingWarmups === this.promptWarmTail) break;
+        pendingWarmups = this.promptWarmTail;
+      }
+    }
+
     this.ensureInitialized();
     const startTime = Date.now();
     debugLogger.logReasoning("INFERENCE_START", {
@@ -565,6 +584,79 @@ class ModelManager {
     } catch (error) {
       debugLogger.warn("Failed to pre-warm llama-server", { error: error.message });
       return false;
+    }
+  }
+
+  async prewarmPrompt(
+    { modelId, systemPrompt, userPrompt, disableThinking = true },
+    { force = false } = {}
+  ) {
+    if (!modelId || !systemPrompt || !userPrompt) return false;
+
+    const payload = { modelId, systemPrompt, userPrompt, disableThinking };
+    this.promptWarmPayload = payload;
+    const key = crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+    const currentPid = this.serverManager.process?.pid ?? null;
+
+    if (
+      !force &&
+      this.promptWarmPending === 0 &&
+      currentPid !== null &&
+      this.currentServerModelId === modelId &&
+      this.promptWarmState?.key === key &&
+      this.promptWarmState?.pid === currentPid
+    ) {
+      return true;
+    }
+
+    // Identical callers share the newest queued warmup. A changed dictionary
+    // or prompt is appended after the old one so the latest request always
+    // owns the final cache state.
+    if (this.promptWarmPending > 0 && this.promptWarmLatestKey === key) {
+      return this.promptWarmTail;
+    }
+
+    const previousWarmups = this.promptWarmTail;
+    this.promptWarmPending += 1;
+    this.promptWarmLatestKey = key;
+    const warmup = previousWarmups
+      .catch(() => {})
+      .then(async () => {
+        await this.runInference(modelId, userPrompt, {
+          systemPrompt,
+          temperature: 0,
+          maxTokens: 1,
+          disableThinking,
+          isPromptWarmup: true,
+        });
+
+        const pid = this.serverManager.process?.pid ?? null;
+        if (pid !== null && this.currentServerModelId === modelId) {
+          this.promptWarmState = { key, pid };
+        }
+        debugLogger.info("llama-server cleanup prompt pre-warmed", { modelId });
+        return true;
+      })
+      .finally(() => {
+        this.promptWarmPending -= 1;
+        if (this.promptWarmPending === 0) this.promptWarmLatestKey = null;
+      });
+
+    this.promptWarmTail = warmup;
+    return warmup;
+  }
+
+  async prewarmLatestPrompt() {
+    if (!this.promptWarmPayload) return false;
+    return this.prewarmPrompt(this.promptWarmPayload, { force: true });
+  }
+
+  async waitForPromptWarmup() {
+    let pendingWarmups = this.promptWarmTail;
+    while (this.promptWarmPending > 0) {
+      await pendingWarmups.catch(() => {});
+      if (pendingWarmups === this.promptWarmTail) break;
+      pendingWarmups = this.promptWarmTail;
     }
   }
 }

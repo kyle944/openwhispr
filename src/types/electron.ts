@@ -1359,6 +1359,12 @@ declare global {
         dictationAgentMode: InferenceMode;
         dictationAgentModel?: string;
       }) => Promise<void>;
+      prewarmLocalCleanup: (payload: {
+        modelId: string;
+        systemPrompt: string;
+        userPrompt: string;
+        disableThinking: boolean;
+      }) => Promise<{ success: boolean }>;
 
       // Clipboard operations
       checkAccessibilityPermission: (silent?: boolean) => Promise<boolean>;
