@@ -1,9 +1,7 @@
-import { useMemo } from "react";
 import { Check, ChevronDown, Copy } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { useStickToBottom } from "../../hooks/useStickToBottom";
-import { splitTranscriptForShimmer } from "../../utils/liveTranscriptPresentation";
 
 export type LiveTranscriptPhase = "listening" | "live" | "cleanup" | "final";
 
@@ -35,11 +33,19 @@ export function LiveTranscriptPanel({
     resetToTop: !text,
   });
   const { copied, copy: handleCopy } = useCopyFeedback(text, { resetMs: COPIED_RESET_MS });
-  const shouldShimmer = Boolean(text) && (phase === "live" || phase === "cleanup" || processing);
-  const shimmerParts = useMemo(
-    () => (shouldShimmer ? splitTranscriptForShimmer(text) : { settled: text, active: "" }),
-    [shouldShimmer, text]
-  );
+  const isBusy = Boolean(text) && (phase === "live" || phase === "cleanup" || processing);
+  const isPolishing = phase === "cleanup" || processing;
+  const isReady = phase === "final" && !processing;
+  const statusText = isPolishing
+    ? t("transcriptionPreview.polishing")
+    : isReady
+      ? t("transcriptionPreview.ready")
+      : t("transcriptionPreview.listening");
+  const statusDotClass = isReady
+    ? "bg-emerald-500/80"
+    : isPolishing
+      ? "bg-violet-500/75"
+      : "bg-sky-500/80";
 
   return (
     <>
@@ -55,17 +61,15 @@ export function LiveTranscriptPanel({
             : "pointer-events-none translate-y-2 opacity-0 delay-0"
         }`}
         aria-label={t("transcriptionPreview.label")}
-        aria-busy={shouldShimmer}
+        aria-busy={isBusy}
         aria-hidden={!contentVisible}
         aria-live="polite"
+        data-live-transcript-phase={phase}
       >
         <div>
           {text ? (
             <p className="select-text whitespace-pre-wrap break-words text-base leading-relaxed text-foreground">
-              <span>{shimmerParts.settled}</span>
-              {shimmerParts.active && (
-                <span className="inline-response-shimmer">{shimmerParts.active}</span>
-              )}
+              {text}
             </p>
           ) : (
             <p className="text-base leading-relaxed text-muted-foreground/55">
@@ -76,10 +80,24 @@ export function LiveTranscriptPanel({
       </main>
 
       <footer
-        className="flex h-16 shrink-0 items-center justify-end px-4"
+        className="flex h-16 shrink-0 items-center justify-between gap-3 px-4"
         onMouseEnter={() => onHoldChange?.(true)}
         onMouseLeave={() => onHoldChange?.(false)}
       >
+        <div
+          className={`flex min-w-0 items-center gap-2 transition-opacity duration-150 ease-out ${
+            controlsVisible ? "opacity-100" : "opacity-0"
+          }`}
+          aria-hidden={!controlsVisible}
+        >
+          <span className={`size-1.5 shrink-0 rounded-full ${statusDotClass}`} aria-hidden="true" />
+          <div className="min-w-0 leading-tight">
+            <p className="truncate text-xs font-medium text-foreground/90">
+              {t("settingsPage.transcription.transcriptionPreview")}
+            </p>
+            <p className="text-[11px] text-muted-foreground">{statusText}</p>
+          </div>
+        </div>
         <div
           className={`flex items-center gap-2 transition-[opacity,transform] duration-200 ease-out ${
             controlsVisible
@@ -93,7 +111,7 @@ export function LiveTranscriptPanel({
             onClick={() => void handleCopy()}
             disabled={!controlsVisible || !text.trim()}
             tabIndex={controlsVisible ? 0 : -1}
-            className="inline-flex size-9 items-center justify-center rounded-full border border-border/35 bg-surface-1 text-muted-foreground shadow-[var(--shadow-card)] transition-colors hover:border-border/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-35"
+            className="inline-flex size-8 items-center justify-center rounded-full border border-border/30 bg-surface-1 text-muted-foreground transition-colors hover:border-border/55 hover:text-foreground disabled:pointer-events-none disabled:opacity-35"
             aria-label={copied ? t("transcriptionPreview.copied") : t("transcriptionPreview.copy")}
           >
             {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
@@ -103,7 +121,7 @@ export function LiveTranscriptPanel({
             onClick={onCollapse}
             disabled={!controlsVisible}
             tabIndex={controlsVisible ? 0 : -1}
-            className="inline-flex size-9 items-center justify-center rounded-full border border-border/35 bg-surface-1 text-foreground shadow-[var(--shadow-card)] transition-colors hover:border-border/60 hover:bg-surface-2 disabled:pointer-events-none"
+            className="inline-flex size-8 items-center justify-center rounded-full border border-border/30 bg-surface-1 text-foreground transition-colors hover:border-border/55 hover:bg-surface-2 disabled:pointer-events-none"
             aria-label={t("transcriptionPreview.collapse", { defaultValue: "Collapse transcript" })}
           >
             <ChevronDown className="size-4" />

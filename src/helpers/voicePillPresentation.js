@@ -73,16 +73,16 @@ export function resolveAssistantResponseReady({
 }
 
 export const LIVE_TRANSCRIPT_ENTRANCE_TIMING = Object.freeze({
-  encapsulateMs: 180,
-  encapsulateHoldMs: 140,
-  horizontalMs: 320,
-  controlsDelayMs: 70,
-  controlsRevealMs: 200,
-  contentDelayMs: 110,
-  measurementSettleMs: 220,
-  panelExpansionMs: 320,
-  contentRevealDelayMs: 80,
-  contentSettleMs: 280,
+  encapsulateMs: 120,
+  encapsulateHoldMs: 20,
+  horizontalMs: 160,
+  controlsDelayMs: 20,
+  controlsRevealMs: 40,
+  contentDelayMs: 20,
+  measurementSettleMs: 60,
+  panelExpansionMs: 160,
+  contentRevealDelayMs: 0,
+  contentSettleMs: 40,
 });
 
 export function getLiveTranscriptEntranceTimeline(timing = LIVE_TRANSCRIPT_ENTRANCE_TIMING) {

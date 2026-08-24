@@ -51,6 +51,10 @@ test("Live Transcript entrance beats land strictly after one another", async () 
   assert.ok(timeline.panelAtMs > timeline.prepareAtMs);
   assert.ok(timeline.contentAtMs > timeline.panelAtMs);
   assert.ok(timeline.streamAtMs > timeline.contentAtMs);
+  assert.ok(
+    timeline.streamAtMs <= 700,
+    "live text should settle promptly instead of waiting through a theatrical entrance"
+  );
 });
 
 test("Live Transcript keeps an adaptive surface instead of entering at Agent height", async () => {

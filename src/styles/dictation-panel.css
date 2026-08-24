@@ -457,31 +457,6 @@
   transform: none;
 }
 
-.inline-response-shimmer {
-  color: transparent;
-  background: linear-gradient(
-    90deg,
-    color-mix(in oklch, var(--color-foreground) 62%, transparent) 0%,
-    var(--color-foreground) 42%,
-    color-mix(in oklch, var(--color-foreground) 62%, transparent) 76%
-  );
-  background-position: 160% 0;
-  background-size: 220% 100%;
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  /* Background-clipped text must be repainted when its background moves. A
-     stepped sweep preserves the shimmer while reducing that work from every
-     display frame to a small, bounded number of paints per cycle. */
-  animation: inline-response-shimmer 2.2s steps(24, end) infinite;
-}
-
-@keyframes inline-response-shimmer {
-  to {
-    background-position: -120% 0;
-  }
-}
-
 /* Let the retained answer recede before the surface sweep begins. The filter
    transitions once and then stays still; only the lightweight sweep repeats. */
 .assistant-response-content {
@@ -604,12 +579,6 @@
   .processing-signal-glow[data-active="true"],
   .processing-signal-glow[data-active="true"]::before {
     animation: none;
-  }
-
-  .inline-response-shimmer {
-    animation: none;
-    color: var(--color-foreground);
-    -webkit-text-fill-color: currentColor;
   }
 
   .assistant-content-area-shimmer::after {

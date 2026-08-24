@@ -38,7 +38,19 @@ async function mountLiveTranscript(t, initialProps = {}) {
   t.after(async () => {
     if (root) await React.act(async () => root.unmount());
   });
-  installBrowserGlobals(t);
+  let previewTextHandler = null;
+  installBrowserGlobals(t, {
+    window: {
+      electronAPI: {
+        onPreviewText(handler) {
+          previewTextHandler = handler;
+          return () => {
+            if (previewTextHandler === handler) previewTextHandler = null;
+          };
+        },
+      },
+    },
+  });
   const container = installHookDom(t);
   const vite = await createRendererServer(t, {
     cachePrefix: "openwhispr-live-transcript-hold-test-",
@@ -65,12 +77,26 @@ async function mountLiveTranscript(t, initialProps = {}) {
   });
   return {
     getPanel: () => panel,
+    emitPreviewText: async (value) => {
+      await React.act(async () => previewTextHandler?.(value));
+    },
     rerender: async (nextProps) => {
       props = { ...props, ...nextProps };
       await React.act(async () => root.render(React.createElement(Harness)));
     },
   };
 }
+
+test("empty streaming warm-up frames do not open a blank transcript panel", async (t) => {
+  const { getPanel, emitPreviewText } = await mountLiveTranscript(t, { isRecording: true });
+
+  await emitPreviewText("   ");
+  assert.equal(getPanel().openRef.current, false);
+  assert.equal(getPanel().mounted, false);
+
+  await emitPreviewText("First decoded words");
+  assert.equal(getPanel().openRef.current, true);
+});
 
 async function showNextFinalAndRunHide(panel, getFinalHideTimer) {
   await React.act(async () => {
