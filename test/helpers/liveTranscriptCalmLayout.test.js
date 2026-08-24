@@ -37,3 +37,12 @@ test("a long provisional transcript becomes a bounded rolling caption", async ()
   assert.ok(text.endsWith(visible.slice(1)));
   assert.equal(resolveLiveTranscriptVisibleText({ phase: "final", text }), text);
 });
+
+test("live words hug the active edge while final text remains readable", async () => {
+  const { resolveLiveTranscriptTextAlignment } = await load();
+
+  assert.equal(resolveLiveTranscriptTextAlignment("listening"), "right");
+  assert.equal(resolveLiveTranscriptTextAlignment("live"), "right");
+  assert.equal(resolveLiveTranscriptTextAlignment("cleanup"), "right");
+  assert.equal(resolveLiveTranscriptTextAlignment("final"), "left");
+});
