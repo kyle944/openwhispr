@@ -437,13 +437,22 @@ export function useLiveTranscriptPanel({
       setManuallyCollapsed(false);
       resetText();
       setPhase("listening");
+      if (openRef.current) {
+        // A rapid second dictation can begin while the prior final panel is
+        // still open. Keep that already-visible surface live instead of
+        // leaving its new text buffered behind an entrance that will not run
+        // again because openPanel() correctly sees the panel as open.
+        clearEntranceTimers();
+        contentReadyRef.current = true;
+        setEntrancePhase("content");
+      }
     }
     previousNormalRecordingRef.current = normalRecording;
 
     if (isRecording && isAssistantVoice && mounted) {
       close({ clear: true });
     }
-  }, [isAssistantVoice, isRecording, mounted, close, resetText]);
+  }, [clearEntranceTimers, isAssistantVoice, isRecording, mounted, close, resetText]);
 
   useEffect(() => {
     if (!isAssistantVoice && (isRecording || isProcessing)) return;

@@ -157,6 +157,20 @@ test("each recording resets the transcript measurement session", async (t) => {
   );
 });
 
+test("a second recording streams text into a transcript panel that is still open", async (t) => {
+  const { getPanel, emitPreviewText, rerender } = await mountLiveTranscript(t);
+
+  await emitPreviewText("prior transcript still visible");
+  assert.equal(getPanel().openRef.current, true);
+  await rerender({ isRecording: true });
+  await emitPreviewText("second recording live words");
+  await React.act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  });
+
+  assert.equal(getPanel().measurementText, "second recording live words");
+});
+
 test("hovering a final transcript pauses its active hide countdown and leaving restarts it", async (t) => {
   const { getPanel } = await mountLiveTranscript(t);
   const getFinalHideTimer = capturePanelTimers(t);
