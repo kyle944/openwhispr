@@ -127,13 +127,16 @@ export function resolveLiveTranscriptEntrancePresentation(phase) {
  */
 export function resolveLiveTranscriptLayout({ phase, text }) {
   const isFinal = phase === "final";
+  const measurementText = isFinal
+    ? text
+    : resolveLiveTranscriptVisibleText({ phase, text, maxCharacters: 260 });
   return {
-    measurementText: isFinal ? text : "",
+    measurementText,
     measurementRevision: isFinal ? text : null,
   };
 }
 
-export function resolveLiveTranscriptVisibleText({ phase, text, maxCharacters = 88 }) {
+export function resolveLiveTranscriptVisibleText({ phase, text, maxCharacters = 260 }) {
   if (phase === "final" || text.length <= maxCharacters) return text;
 
   const tail = text.slice(-(maxCharacters - 1));
@@ -142,8 +145,8 @@ export function resolveLiveTranscriptVisibleText({ phase, text, maxCharacters = 
   return `…${visibleTail.trimStart()}`;
 }
 
-export function resolveLiveTranscriptTextAlignment(phase) {
-  return phase === "final" ? "left" : "right";
+export function resolveLiveTranscriptTextAlignment(_phase) {
+  return "left";
 }
 
 /**
@@ -163,14 +166,10 @@ export function resolveVoicePillDock({
   horizontalDirection = resolveVoiceHorizontalDirection(panelStartPosition),
 }) {
   if (liveTranscriptOpen) {
-    if (liveTranscriptEntrancePhase === "encapsulate") {
-      return `live-transcript-encapsulated-bottom-${horizontalDirection}`;
-    }
-
-    // Keep the speaking identity attached to the user's chosen screen edge.
-    // Moving a right-docked pill to the expanded panel's left edge makes the
-    // active control appear near the middle of the display.
-    return `live-transcript-bottom-${horizontalDirection}`;
+    // The transcript surface grows around the control. The control itself
+    // never leaves the resting screen-edge anchor, so the circle, waveform,
+    // and repeated sessions all begin and end at exactly the same point.
+    return `bottom-${horizontalDirection}`;
   }
   if (assistantOpen) return `assistant-bottom-${horizontalDirection}`;
   if (panelStartPosition === "center") return "center";

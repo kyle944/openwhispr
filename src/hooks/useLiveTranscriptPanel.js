@@ -34,6 +34,7 @@ export function useLiveTranscriptPanel({
   const [phase, setPhase] = useState("listening");
   const [entrancePhase, setEntrancePhase] = useState("idle");
   const [manuallyCollapsed, setManuallyCollapsed] = useState(false);
+  const [sessionKey, setSessionKey] = useState(0);
 
   const openRef = useRef(open);
   const suppressedRef = useRef(false);
@@ -112,6 +113,7 @@ export function useLiveTranscriptPanel({
     };
     setText("");
     setMeasurementText("");
+    setSessionKey((current) => current + 1);
   }, []);
 
   // Pending transcript text is rendered invisibly first. Its real wrapping is
@@ -467,6 +469,7 @@ export function useLiveTranscriptPanel({
     phase,
     entrancePhase,
     manuallyCollapsed,
+    sessionKey,
     openRef,
     requestHeight,
     close,

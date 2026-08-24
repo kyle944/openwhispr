@@ -62,7 +62,7 @@ test("Live Transcript keeps an adaptive surface instead of entering at Agent hei
 
   assert.deepEqual(LIVE_TRANSCRIPT_SURFACE_LIMITS, {
     minHeight: 152,
-    maxHeight: 538,
+    maxHeight: 248,
   });
   assert.ok(LIVE_TRANSCRIPT_SURFACE_LIMITS.minHeight < LIVE_TRANSCRIPT_SURFACE_LIMITS.maxHeight);
 });
@@ -85,7 +85,7 @@ test("the speaking pill stays attached to the right edge through Live Transcript
       assistantOpen: false,
       panelStartPosition: "bottom-right",
     }),
-    "live-transcript-bottom-right"
+    "bottom-right"
   );
   assert.equal(
     resolveVoicePillDock({
@@ -94,7 +94,7 @@ test("the speaking pill stays attached to the right edge through Live Transcript
       assistantOpen: false,
       panelStartPosition: "bottom-right",
     }),
-    "live-transcript-encapsulated-bottom-right"
+    "bottom-right"
   );
   assert.equal(
     resolveVoicePillDock({
@@ -117,7 +117,7 @@ test("a left-origin session keeps the speaking pill left while surfaces grow rig
       assistantOpen: false,
       panelStartPosition: "bottom-left",
     }),
-    "live-transcript-encapsulated-bottom-left"
+    "bottom-left"
   );
   for (const liveTranscriptEntrancePhase of ["horizontal", "controls", "content"]) {
     assert.equal(
@@ -127,7 +127,7 @@ test("a left-origin session keeps the speaking pill left while surfaces grow rig
         assistantOpen: false,
         panelStartPosition: "bottom-left",
       }),
-      "live-transcript-bottom-left"
+      "bottom-left"
     );
   }
   assert.equal(
