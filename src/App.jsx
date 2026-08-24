@@ -27,6 +27,7 @@ import {
   ASSISTANT_FOOTER_TRANSITION_TIMING,
   LIVE_TRANSCRIPT_ENTRANCE_TIMING,
   resolveLiveTranscriptEntrancePresentation,
+  resolveLiveTranscriptLayout,
   resolveAssistantFooterPresentation,
   resolveAgentModeActive,
   resolveListeningEntrancePresentation,
@@ -227,6 +228,10 @@ export default function App() {
     isRecording,
     isProcessing,
     isAssistantVoice,
+  });
+  const liveTranscriptLayout = resolveLiveTranscriptLayout({
+    phase: liveTranscript.phase,
+    text: liveTranscript.measurementText,
   });
 
   useLayoutEffect(() => {
@@ -715,7 +720,9 @@ export default function App() {
         horizontalDirection={voiceHorizontalDirection}
         label={activeVoicePanelLabel}
         measurementRevision={
-          activeVoicePanelMode === "live-transcript" ? liveTranscript.measurementText : null
+          activeVoicePanelMode === "live-transcript"
+            ? liveTranscriptLayout.measurementRevision
+            : null
         }
         onPreferredHeightChange={liveTranscript.requestHeight}
         onClosingFadeComplete={assistant.completeContentFade}
@@ -745,7 +752,7 @@ export default function App() {
         {activeVoicePanelMode !== "assistant" && (
           <LiveTranscriptPanel
             text={liveTranscript.mounted ? liveTranscript.text : ""}
-            measurementText={liveTranscript.mounted ? liveTranscript.measurementText : ""}
+            measurementText={liveTranscript.mounted ? liveTranscriptLayout.measurementText : ""}
             phase={liveTranscript.phase}
             processing={liveTranscript.mounted && isProcessing && !isAssistantVoice}
             controlsVisible={liveTranscript.mounted && liveTranscriptEntrance.controlsVisible}
