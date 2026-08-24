@@ -120,6 +120,29 @@ export function resolveLiveTranscriptEntrancePresentation(phase) {
 }
 
 /**
+ * Streaming transcripts are provisional: the recognizer can replace their
+ * trailing words several times before it emits a final result. Keep that churn
+ * inside one compact scroll region instead of treating every rewrite as a new
+ * native-window layout. The final transcript gets one measured expansion.
+ */
+export function resolveLiveTranscriptLayout({ phase, text }) {
+  const isFinal = phase === "final";
+  return {
+    measurementText: isFinal ? text : "",
+    measurementRevision: isFinal ? text : null,
+  };
+}
+
+export function resolveLiveTranscriptVisibleText({ phase, text, maxCharacters = 88 }) {
+  if (phase === "final" || text.length <= maxCharacters) return text;
+
+  const tail = text.slice(-(maxCharacters - 1));
+  const firstWordBoundary = tail.indexOf(" ");
+  const visibleTail = firstWordBoundary >= 0 ? tail.slice(firstWordBoundary + 1) : tail;
+  return `…${visibleTail.trimStart()}`;
+}
+
+/**
  * Expanded voice modes only animate horizontally from the two supported edge
  * docks. Keep center on the established right-origin choreography until a
  * dedicated centered transition is designed.
