@@ -1,6 +1,6 @@
 import * as React from "react";
 
-export type ToastPresentation = "standard" | "dictation-error";
+export type ToastPresentation = "standard" | "dictation-error" | "dictionary-learned";
 
 export interface ToastActionConfig {
   label: string;
