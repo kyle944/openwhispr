@@ -64,8 +64,44 @@ function getLocalCalendarContext(): string {
   return `Current local date and time: ${formatLocalRfc3339(now)}. IANA time zone: ${timeZone}.`;
 }
 
-export function getAgentSystemPrompt(availableTools?: string[], noteContext?: string): string {
+interface AgentRuntimeIdentity {
+  mode: string;
+  provider: string;
+  model: string;
+}
+
+function getAgentRuntimeIdentity({ mode, provider, model }: AgentRuntimeIdentity): string {
+  if (mode === "local") {
+    return (
+      `You are the OpenWhispr assistant running locally on this device with model ${model}. ` +
+      "If asked about your model or hosting, state that exactly. Do not claim to be GPT-4 or hosted by OpenAI."
+    );
+  }
+
+  if (mode === "openwhispr") {
+    return (
+      "You are the OpenWhispr assistant using OpenWhispr's hosted service. " +
+      "Do not claim a specific underlying model or infrastructure unless it is explicitly provided."
+    );
+  }
+
+  const location = mode === "self-hosted" ? "a self-hosted endpoint" : `provider ${provider}`;
+  return (
+    `You are the OpenWhispr assistant using ${location} with model ${model}. ` +
+    "If asked about your model or hosting, state only this configured runtime."
+  );
+}
+
+export function getAgentSystemPrompt(
+  availableTools?: string[],
+  noteContext?: string,
+  runtimeIdentity?: AgentRuntimeIdentity
+): string {
   let prompt = resolvePrompt("chatAgent", { agentName: null });
+
+  if (runtimeIdentity) {
+    prompt += "\n\n" + getAgentRuntimeIdentity(runtimeIdentity);
+  }
 
   if (availableTools && availableTools.length > 0) {
     const toolLines = availableTools.map((name) => TOOL_INSTRUCTIONS[name]).filter(Boolean);

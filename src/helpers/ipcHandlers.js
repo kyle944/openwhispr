@@ -4720,6 +4720,19 @@ class IPCHandlers {
       }
     });
 
+    ipcMain.handle("prewarm-local-cleanup", async (_event, payload) => {
+      try {
+        const modelManager = require("./modelManagerBridge").default;
+        const success = await modelManager.prewarmPrompt(payload || {});
+        return { success };
+      } catch (error) {
+        debugLogger.debug("Local cleanup prompt pre-warm failed (non-fatal)", {
+          error: error.message,
+        });
+        return { success: false };
+      }
+    });
+
     ipcMain.handle(
       "process-anthropic-reasoning",
       async (event, text, modelId, _agentName, config) => {
@@ -4847,6 +4860,7 @@ class IPCHandlers {
     ipcMain.handle("llama-server-start", async (event, modelId) => {
       try {
         const modelManager = require("./modelManagerBridge").default;
+        await modelManager.waitForPromptWarmup();
         modelManager.ensureInitialized();
         const modelInfo = modelManager.findModelById(modelId);
         if (!modelInfo) {
@@ -8332,6 +8346,17 @@ class IPCHandlers {
         dictationPreviewDisplay = display;
         dictationPreviewChunkCount = 0;
         if (display) this.windowManager.showTranscriptionPreview("");
+
+        // Re-prime at the start of every recording. Local chat or Agent Mode
+        // can replace llama.cpp's mutable prefix cache without restarting the
+        // server; this runs beside speech capture and restores the exact
+        // cleanup prompt before the user stops talking.
+        const modelManager = require("./modelManagerBridge").default;
+        void modelManager.prewarmLatestPrompt().catch((error) => {
+          debugLogger.debug("Recording-start cleanup pre-warm failed (non-fatal)", {
+            error: error.message,
+          });
+        });
 
         if (provider === "nvidia" && this.parakeetManager.supportsOnlineStreaming(model)) {
           try {

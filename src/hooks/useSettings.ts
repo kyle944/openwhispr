@@ -11,6 +11,9 @@ import type {
 import type { Snippet } from "../utils/snippets";
 import { effectiveAudioRetentionDays } from "../stores/policyRules";
 import { usePolicyStore } from "../stores/policyStore";
+import { getCleanupSystemPrompt, wrapCleanupTranscript } from "../config/prompts";
+import { resolveCleanupLanguage } from "../utils/chineseScript";
+import { getDictionaryHintWords } from "../utils/snippets";
 
 export interface TranscriptionSettings {
   uiLanguage: string;
@@ -120,11 +123,11 @@ function useSettingsInternal() {
 
   // One-time initialization: sync API keys, dictation key, activation mode,
   // UI language, and dictionary from the main process / SQLite.
-  const hasInitialized = useRef(false);
+  const initializationRef = useRef<Promise<void> | null>(null);
   useEffect(() => {
-    if (hasInitialized.current) return;
-    hasInitialized.current = true;
-    initializeSettings().catch((err) => {
+    if (initializationRef.current) return;
+    initializationRef.current = initializeSettings();
+    initializationRef.current.catch((err) => {
       logger.warn(
         "Failed to initialize settings store",
         { error: (err as Error).message },
@@ -132,6 +135,59 @@ function useSettingsInternal() {
       );
     });
   }, []);
+
+  // Main-process startup loads Qwen's weights, but llama.cpp still has to
+  // evaluate the full cleanup prompt on the first dictation. Prefill the exact
+  // hydrated prompt (dictionary, snippets, language, and custom prompt) once in
+  // the background so that work is finished before the user stops speaking.
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.electronAPI?.prewarmLocalCleanup) return;
+
+    let cancelled = false;
+    const prewarm = async () => {
+      await (initializationRef.current || initializeSettings());
+      if (cancelled) return;
+
+      const current = useSettingsStore.getState();
+      if (!current.useCleanupModel || current.cleanupMode !== "local" || !current.cleanupModel)
+        return;
+
+      const agentName = localStorage.getItem("agentName") || null;
+      const systemPrompt = getCleanupSystemPrompt(
+        agentName,
+        getDictionaryHintWords(current),
+        resolveCleanupLanguage(current.preferredLanguage),
+        current.uiLanguage
+      );
+
+      await window.electronAPI.prewarmLocalCleanup({
+        modelId: current.cleanupModel,
+        systemPrompt,
+        userPrompt: wrapCleanupTranscript(""),
+        disableThinking: current.cleanupDisableThinking,
+      });
+    };
+
+    void prewarm().catch((err) => {
+      logger.debug("Local cleanup prompt pre-warm failed", {
+        error: (err as Error).message,
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    store.useCleanupModel,
+    store.cleanupMode,
+    store.cleanupModel,
+    store.cleanupDisableThinking,
+    store.customDictionary,
+    store.snippets,
+    store.preferredLanguage,
+    store.uiLanguage,
+    store.customPrompts.cleanup,
+  ]);
 
   // Refresh the in-memory store from main-process broadcasts (auto-learn, sync
   // pulls) without re-triggering a sync — that would loop, since pulls emit the

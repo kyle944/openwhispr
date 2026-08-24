@@ -65,10 +65,11 @@ async function setupChain(t, respond) {
   const server = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (chunk) => (raw += chunk));
-    req.on("end", () => {
-      requests.push(JSON.parse(raw));
+    req.on("end", async () => {
+      const request = JSON.parse(raw);
+      requests.push(request);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(respond()));
+      res.end(JSON.stringify(await respond(request)));
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -83,12 +84,12 @@ async function setupChain(t, respond) {
   const serverManager = modelManager.serverManager;
   serverManager.cachedServerBinaryPaths = { default: "/stub/llama-server" };
   serverManager.ready = true;
-  serverManager.process = {};
+  serverManager.process = { pid: 1234 };
   serverManager.port = server.address().port;
   modelManager.currentServerModelId = model.id;
   t.after(() => serverManager.clearIdleTimer());
 
-  return { bridge, modelId: model.id, requests };
+  return { bridge, modelManager, modelId: model.id, requests };
 }
 
 const completion = (finishReason, content) => ({
@@ -117,4 +118,93 @@ test("an explicit temperature of 0 reaches llama-server instead of the 0.7 defau
 
   assert.equal(requests.length, 1);
   assert.equal(requests[0].temperature, 0);
+});
+
+test("cleanup prompt prewarm coalesces and invalidates when llama-server restarts", async (t) => {
+  const { modelManager, modelId, requests } = await setupChain(t, () =>
+    completion("length", "warm")
+  );
+  const payload = {
+    modelId,
+    systemPrompt: "exact cleanup prompt with dictionary: crazy",
+    userPrompt: "<transcript>\n\n</transcript>\n\nOutput only the cleaned transcript.",
+    disableThinking: true,
+  };
+
+  await Promise.all([modelManager.prewarmPrompt(payload), modelManager.prewarmPrompt(payload)]);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].temperature, 0);
+  assert.equal(requests[0].max_tokens, 1);
+  assert.equal(requests[0].messages[0].content, payload.systemPrompt);
+  assert.equal(requests[0].messages[1].content, payload.userPrompt);
+
+  await modelManager.prewarmPrompt(payload);
+  assert.equal(requests.length, 1, "same prompt and server process stay warm");
+
+  modelManager.serverManager.process.pid = 5678;
+  await modelManager.prewarmPrompt(payload);
+  assert.equal(requests.length, 2, "a restarted server loses its prompt cache");
+});
+
+test("changed cleanup prompts warm serially with the newest prompt last", async (t) => {
+  const releases = [];
+  const { modelManager, modelId, requests } = await setupChain(
+    t,
+    () =>
+      new Promise((resolve) => {
+        releases.push(() => resolve(completion("length", "warm")));
+      })
+  );
+  const first = {
+    modelId,
+    systemPrompt: "dictionary: cracy",
+    userPrompt: "<transcript>\n\n</transcript>",
+  };
+  const latest = { ...first, systemPrompt: "dictionary: crazy" };
+
+  const firstWarm = modelManager.prewarmPrompt(first);
+  while (requests.length < 1) await new Promise((resolve) => setImmediate(resolve));
+  const latestWarm = modelManager.prewarmPrompt(latest);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests.length, 1, "a changed prompt waits for the active warmup");
+
+  releases.shift()();
+  while (requests.length < 2) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests[1].messages[0].content, latest.systemPrompt);
+  releases.shift()();
+  await Promise.all([firstWarm, latestWarm]);
+
+  await modelManager.prewarmPrompt(latest);
+  assert.equal(requests.length, 2, "the newest completed prompt owns the cache marker");
+});
+
+test("user-visible local inference waits for prompt warmup instead of competing", async (t) => {
+  const releases = [];
+  const { modelManager, modelId, requests } = await setupChain(
+    t,
+    () =>
+      new Promise((resolve) => {
+        releases.push(() => resolve(completion("stop", "ok")));
+      })
+  );
+  const payload = {
+    modelId,
+    systemPrompt: "exact cleanup prompt",
+    userPrompt: "<transcript>\n\n</transcript>",
+  };
+
+  const warm = modelManager.prewarmPrompt(payload);
+  while (requests.length < 1) await new Promise((resolve) => setImmediate(resolve));
+  const real = modelManager.runInference(modelId, "You cracy", {
+    systemPrompt: payload.systemPrompt,
+    temperature: 0,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests.length, 1, "real inference stays behind the warmup");
+
+  releases.shift()();
+  while (requests.length < 2) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests[1].messages[1].content, "You cracy");
+  releases.shift()();
+  await Promise.all([warm, real]);
 });

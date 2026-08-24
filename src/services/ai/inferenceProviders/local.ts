@@ -14,11 +14,15 @@ export const localProvider: InferenceProvider = {
 
     logger.logReasoning("LOCAL_IPC_CALL", { model, textLength: text.length });
 
+    const isCleanup = !config.systemPrompt;
     const systemPrompt = config.systemPrompt || ctx.getSystemPrompt(agentName);
-    const userContent = config.systemPrompt ? text : wrapCleanupTranscript(text);
+    const userContent = isCleanup ? wrapCleanupTranscript(text) : text;
     const result = await window.electronAPI.processLocalReasoning(userContent, model, agentName, {
       ...config,
       systemPrompt,
+      // Cleanup is a deterministic text transform. The local bridge otherwise
+      // defaults to 0.7, which makes short misspellings vary between runs.
+      ...(isCleanup && config.temperature === undefined ? { temperature: 0 } : {}),
     });
 
     const processingTimeMs = Date.now() - startTime;
