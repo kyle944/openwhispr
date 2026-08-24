@@ -1,5 +1,5 @@
 import * as React from "react";
-import { X, Copy, Check } from "lucide-react";
+import { X, Copy, Check, BookOpen } from "lucide-react";
 import { cn } from "../lib/utils";
 import {
   ToastContext,
@@ -69,28 +69,27 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         createdAt: Date.now(),
       };
 
-      if (presentation === "dictation-error") {
-        // The new error replaces any current one; its auto-dismiss timer must
-        // not fire (and re-schedule exit work) for the removed toast.
+      if (presentation === "dictation-error" || presentation === "dictionary-learned") {
+        // Errors and learned corrections are current state, not a feed. Replace
+        // an older item of the same kind so rapid dictations never build a
+        // stack of stale cards behind the voice panel.
         for (const item of toastsRef.current) {
-          if (item.presentation === "dictation-error") clearTimer(item.id);
+          if (item.presentation === presentation) clearTimer(item.id);
         }
       }
+      const shouldReplacePresentation =
+        presentation === "dictation-error" || presentation === "dictionary-learned";
       setToasts((prev) =>
-        presentation === "dictation-error"
-          ? [...prev.filter((item) => item.presentation !== "dictation-error"), newToast]
+        shouldReplacePresentation
+          ? [...prev.filter((item) => item.presentation !== presentation), newToast]
           : [...prev, newToast]
       );
       // Mirror synchronously: dismissByPresentation can run from a child's
       // effect in the same commit, before this provider's effect refreshes
       // toastsRef from state.
-      toastsRef.current =
-        presentation === "dictation-error"
-          ? [
-              ...toastsRef.current.filter((item) => item.presentation !== "dictation-error"),
-              newToast,
-            ]
-          : [...toastsRef.current, newToast];
+      toastsRef.current = shouldReplacePresentation
+        ? [...toastsRef.current.filter((item) => item.presentation !== presentation), newToast]
+        : [...toastsRef.current, newToast];
 
       if (duration > 0) {
         const timer = setTimeout(() => {
@@ -192,6 +191,7 @@ const ToastViewport: React.FC<{
   // Keep the error viewport anchored through its exit animation so the card
   // does not jump back to the standard toast position while fading out.
   const hasDictationError = toasts.some((toast) => toast.presentation === "dictation-error");
+  const hasDictionaryUpdate = toasts.some((toast) => toast.presentation === "dictionary-learned");
 
   if (toasts.length === 0) return null;
 
@@ -202,7 +202,9 @@ const ToastViewport: React.FC<{
         isDictationPanel
           ? hasDictationError
             ? "inset-x-3 bottom-3"
-            : "bottom-20 right-6"
+            : hasDictionaryUpdate
+              ? "bottom-[4.5rem] right-5"
+              : "bottom-20 right-6"
           : "bottom-5 right-5"
       )}
     >
@@ -336,6 +338,38 @@ const Toast: React.FC<
           progressPaused={timerPaused}
           ready={errorSurfaceReady}
         />
+      </div>
+    );
+  }
+
+  if (presentation === "dictionary-learned") {
+    return (
+      <div
+        data-toast-presentation="dictionary-learned"
+        className={cn(
+          "pointer-events-auto flex w-fit max-w-[calc(100vw-2.5rem)] items-center gap-2",
+          "rounded-2xl border border-border/60 bg-surface-0 px-2.5 py-2",
+          "shadow-[var(--shadow-card)]",
+          "transition-[opacity,transform] duration-180 ease-out",
+          isExiting
+            ? "translate-x-1.5 opacity-0"
+            : "translate-x-0 opacity-100 animate-in slide-in-from-right-2 fade-in-0"
+        )}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+        role="status"
+        aria-live="polite"
+      >
+        <span
+          className="flex size-7 shrink-0 items-center justify-center rounded-full bg-surface-2 text-muted-foreground"
+          aria-hidden="true"
+        >
+          <BookOpen className="size-3.5" strokeWidth={1.8} />
+        </span>
+        {message && (
+          <p className="min-w-0 text-xs font-medium leading-snug text-foreground/90">{message}</p>
+        )}
+        {action && <div className="shrink-0 border-l border-border/50 pl-1.5">{action}</div>}
       </div>
     );
   }

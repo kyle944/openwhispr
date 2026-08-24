@@ -53,8 +53,8 @@ export function useMainProcessNotifications({
         let toastId: string;
         toastId = toast({
           title: t("app.toasts.addedToDict", { words: wordList }),
-          variant: "success",
-          duration: 6000,
+          presentation: "dictionary-learned",
+          duration: 5000,
           action: (
             <button
               onClick={async () => {
@@ -67,11 +67,10 @@ export function useMainProcessNotifications({
                   // silently fail — word stays in dictionary
                 }
               }}
-              className="text-[10px] font-medium px-2.5 py-1 rounded-sm whitespace-nowrap
-                text-emerald-100/90 hover:text-white
-                bg-emerald-500/15 hover:bg-emerald-500/25
-                border border-emerald-400/20 hover:border-emerald-400/35
-                transition-all duration-150"
+              className="shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium
+                text-muted-foreground transition-colors duration-150
+                hover:bg-surface-2 hover:text-foreground
+                focus:outline-none focus-visible:ring-1 focus-visible:ring-border-hover"
             >
               {t("app.toasts.undo")}
             </button>

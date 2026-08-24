@@ -8,7 +8,10 @@
  *   (e.g. Toast.tsx) but are no longer read here.
  */
 export function resolveToastPresentation({ presentation }) {
-  return presentation === "dictation-error" ? "dictation-error" : "standard";
+  if (presentation === "dictation-error" || presentation === "dictionary-learned") {
+    return presentation;
+  }
+  return "standard";
 }
 
 export function getDictationErrorActionCount(toasts) {
