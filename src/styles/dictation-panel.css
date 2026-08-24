@@ -445,6 +445,12 @@
   transform: none;
 }
 
+.voice-pill-position-live-transcript-bottom-right {
+  bottom: 1.625rem;
+  left: calc(100% - 1.75rem);
+  transform: translateX(-100%);
+}
+
 .voice-pill-position-live-transcript-encapsulated-bottom-right {
   bottom: 1.625rem;
   left: calc(100% - 1.75rem);

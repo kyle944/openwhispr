@@ -1,6 +1,9 @@
 import { Check, ChevronDown, Copy } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { resolveLiveTranscriptVisibleText } from "../../helpers/voicePillPresentation";
+import {
+  resolveLiveTranscriptTextAlignment,
+  resolveLiveTranscriptVisibleText,
+} from "../../helpers/voicePillPresentation";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import { useStickToBottom } from "../../hooks/useStickToBottom";
 
@@ -31,6 +34,7 @@ export function LiveTranscriptPanel({
 }: LiveTranscriptPanelProps) {
   const { t } = useTranslation();
   const visibleText = resolveLiveTranscriptVisibleText({ phase, text });
+  const textAlignment = resolveLiveTranscriptTextAlignment(phase);
   const { scrollRef, handleScroll } = useStickToBottom<HTMLDivElement>(visibleText, {
     resetToTop: !visibleText,
   });
@@ -66,7 +70,7 @@ export function LiveTranscriptPanel({
         aria-live="polite"
         data-live-transcript-phase={phase}
       >
-        <div>
+        <div className={textAlignment === "right" ? "text-right" : "text-left"}>
           {visibleText ? (
             <p className="select-text whitespace-pre-wrap break-words text-base leading-relaxed text-foreground">
               {visibleText}

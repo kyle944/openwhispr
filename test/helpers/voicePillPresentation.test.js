@@ -75,7 +75,7 @@ test("voice mode direction mirrors the right baseline only for bottom-left", asy
   assert.equal(resolveVoiceHorizontalDirection("center"), "right");
 });
 
-test("the speaking pill resolves right-origin modes onto one interpolable dock system", async () => {
+test("the speaking pill stays attached to the right edge through Live Transcript", async () => {
   const { resolveVoicePillDock } = await load();
 
   assert.equal(
@@ -85,7 +85,7 @@ test("the speaking pill resolves right-origin modes onto one interpolable dock s
       assistantOpen: false,
       panelStartPosition: "bottom-right",
     }),
-    "live-transcript-bottom-left"
+    "live-transcript-bottom-right"
   );
   assert.equal(
     resolveVoicePillDock({

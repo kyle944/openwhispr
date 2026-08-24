@@ -142,6 +142,10 @@ export function resolveLiveTranscriptVisibleText({ phase, text, maxCharacters = 
   return `…${visibleTail.trimStart()}`;
 }
 
+export function resolveLiveTranscriptTextAlignment(phase) {
+  return phase === "final" ? "left" : "right";
+}
+
 /**
  * Expanded voice modes only animate horizontally from the two supported edge
  * docks. Keep center on the established right-origin choreography until a
@@ -163,10 +167,10 @@ export function resolveVoicePillDock({
       return `live-transcript-encapsulated-bottom-${horizontalDirection}`;
     }
 
-    // The established right-origin flow carries the pill to the left side as
-    // the footer grows leftward. A left-origin flow already occupies that
-    // anchor, so keep it fixed while the footer grows rightward around it.
-    return "live-transcript-bottom-left";
+    // Keep the speaking identity attached to the user's chosen screen edge.
+    // Moving a right-docked pill to the expanded panel's left edge makes the
+    // active control appear near the middle of the display.
+    return `live-transcript-bottom-${horizontalDirection}`;
   }
   if (assistantOpen) return `assistant-bottom-${horizontalDirection}`;
   if (panelStartPosition === "center") return "center";
