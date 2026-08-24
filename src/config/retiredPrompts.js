@@ -46,6 +46,8 @@ export const RETIRED_DEFAULT_PROMPT_HASHES = new Set([
   "a6acdbe8005a320c802a2b72e0b779f6707207f7a4be4e797c39289ce63cd6df",
   //  1749ch 2804af04 en cleanupPrompt (+1 more)
   "6334e82181b678ca5d7670e1d101c032729509f4daf3e0f38206cb56e25b9fbe",
+  //  2227ch db9fd036 en cleanupPrompt
+  "58ed65fbc679a7bac1483ef850c51ac7932a02d17fab9ca688f4d11f6aa9b7e6",
   //  2047ch 2f0637ed zh-TW fullPrompt
   "2dfd35dcbfad136ad51d1741c1ecd865e3659d40373022822bb103c7b5ef75f5",
   //  2047ch e794b337 zh-TW fullPrompt (+2 more)
@@ -89,7 +91,7 @@ export const CURRENT_DEFAULT_PROMPT_HASHES = {
   "de/cleanupPrompt": "89452bfcce253803ae9fd9b0e9fc3f50afbf9c8d89706ad92dfc48d1e29ec4af",
   "de/fullPrompt": "9312644f8de56d874e0de9e18d610a3ed6afd0ca1b31411f02d021e012fee601",
   "de/translatePrompt": "818b9176518120cd7889726574b61026733ffb69768d3d00e417c28389e5875e",
-  "en/cleanupPrompt": "58ed65fbc679a7bac1483ef850c51ac7932a02d17fab9ca688f4d11f6aa9b7e6",
+  "en/cleanupPrompt": "72fee15901b699264f2601a8aa76fa9e5eea5f771a974f05f9ec92958776b574",
   "en/fullPrompt": "9312644f8de56d874e0de9e18d610a3ed6afd0ca1b31411f02d021e012fee601",
   "en/translatePrompt": "2acf77e82671cfb27f56210461369cca96da52d68597dd825bb5f3cf7fd4cd47",
   "es/cleanupPrompt": "3a977c7d5435d799873a1003d68924b08a51d720386fe8cc9ac16304607df56d",

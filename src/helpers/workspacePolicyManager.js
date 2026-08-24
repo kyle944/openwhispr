@@ -358,6 +358,24 @@ function createWorkspacePolicyManager({
           : result
       );
     }
+    // A credential-bound unmanaged verdict already authorizes personal/local use.
+    // Serve it before the network round trip so a fresh launch does not show the
+    // organization-policy block for up to requestTimeoutMs. The refresh still
+    // starts immediately and broadcasts any authoritative change. Managed-required
+    // markers are excluded by cachedData(), and unknown credentials still fail closed.
+    if (!current) {
+      const cached = cachedData(identity);
+      if (cached?.managed === false) {
+        const cachedRevision = revision;
+        snapshots.set(key, { data: cached, revision: cachedRevision });
+        lastAttempts.set(key, now());
+        const pending = fetchPolicy(identity).finally(() => {
+          if (inFlight.get(key) === pending) inFlight.delete(key);
+        });
+        inFlight.set(key, pending);
+        return publicSnapshot(identity, cached, "cached", cachedRevision);
+      }
+    }
     const lastAttempt = lastAttempts.get(key);
     const attemptAge = lastAttempt === undefined ? null : now() - lastAttempt;
     const attemptIsThrottled =

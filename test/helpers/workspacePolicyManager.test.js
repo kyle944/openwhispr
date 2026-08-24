@@ -89,6 +89,42 @@ test("caches authoritative unmanaged verdicts for offline startup", async (t) =>
   assert.equal(second.managed, false);
 });
 
+test("serves a disk-cached unmanaged verdict before a slow startup refresh", async (t) => {
+  const context = setup(async () =>
+    response(200, { data: { managed: false, policy: null, policyUpdatedAt: null } })
+  );
+  t.after(context.cleanup);
+  const request = { accountId: "account-a", expectedAuthGeneration: 1 };
+  await context.manager.getPolicy(request);
+
+  let resolveRefresh;
+  let refreshCalls = 0;
+  const broadcasts = [];
+  const restarted = createWorkspacePolicyManager({
+    cachePath: context.cachePath,
+    getApiUrl: () => "https://api.openwhispr.test",
+    getAppVersion: () => "1.8.1",
+    proxyFetch: () => {
+      refreshCalls += 1;
+      return new Promise((resolve) => (resolveRefresh = resolve));
+    },
+    tokenStore: { getState: () => ({ ...context.tokenState }) },
+    broadcast: (snapshot) => broadcasts.push(snapshot),
+    logger: { error() {}, warn() {} },
+    requestTimeoutMs: 1_000,
+  });
+
+  const cached = await restarted.getPolicy(request);
+  assert.equal(cached.success, true);
+  assert.equal(cached.status, "cached");
+  assert.equal(cached.managed, false);
+  assert.equal(refreshCalls, 1, "the authoritative refresh still starts immediately");
+
+  resolveRefresh(response(200, { data: validPolicy().data }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(broadcasts.at(-1).managed, true);
+});
+
 test("renderer account labels do not override credential-bound cache identity", async (t) => {
   let online = true;
   const context = setup(async () => {
