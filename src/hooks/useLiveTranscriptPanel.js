@@ -7,8 +7,8 @@ import {
   shouldOfferLiveTranscriptReopen,
 } from "../helpers/voicePillPresentation";
 
-const LIVE_TRANSCRIPT_RENDER_INTERVAL_MS = 50;
-const LIVE_TRANSCRIPT_SHELL_GROW_MS = 180;
+const LIVE_TRANSCRIPT_RENDER_INTERVAL_MS = 80;
+const LIVE_TRANSCRIPT_SHELL_GROW_MS = 120;
 const LIVE_TRANSCRIPT_CLOSE_UNMOUNT_MS = 320;
 const LIVE_TRANSCRIPT_FINAL_HIDE_MS = 4000;
 
@@ -361,8 +361,15 @@ export function useLiveTranscriptPanel({
     const disposeText = window.electronAPI?.onPreviewText?.((incoming) => {
       clearFinalHide();
       const value = incoming?.trim?.() || "";
+      // Streaming engines may emit empty warm-up frames before they have
+      // decoded speech. Ignore them instead of opening a blank panel that
+      // immediately competes with the recording pill for attention.
+      if (!value) {
+        if (!sourceTextRef.current) setPhase("listening");
+        return;
+      }
       updateText(value);
-      setPhase(value ? "live" : "listening");
+      setPhase("live");
       reveal();
     });
     const disposeAppend = window.electronAPI?.onPreviewAppend?.((chunk) => {
