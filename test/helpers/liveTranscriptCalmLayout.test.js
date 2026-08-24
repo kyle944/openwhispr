@@ -3,7 +3,7 @@ const assert = require("node:assert/strict");
 
 const load = () => import("../../src/helpers/voicePillPresentation.js");
 
-test("streaming transcript rewrites do not request native-window layout changes", async () => {
+test("streaming transcript can grow through a bounded measurement caption", async () => {
   const { resolveLiveTranscriptLayout } = await load();
   const provisional = resolveLiveTranscriptLayout({
     phase: "live",
@@ -11,9 +11,20 @@ test("streaming transcript rewrites do not request native-window layout changes"
   });
 
   assert.deepEqual(provisional, {
-    measurementText: "",
+    measurementText: "I will be talking and then the recognizer may change these words",
     measurementRevision: null,
   });
+});
+
+test("streaming measurement stays bounded while preserving the newest words", async () => {
+  const { resolveLiveTranscriptLayout } = await load();
+  const text = Array.from({ length: 80 }, (_, index) => `word${index}`).join(" ");
+  const provisional = resolveLiveTranscriptLayout({ phase: "live", text });
+
+  assert.ok(provisional.measurementText.startsWith("…"));
+  assert.ok(provisional.measurementText.length <= 260);
+  assert.ok(text.endsWith(provisional.measurementText.slice(1)));
+  assert.equal(provisional.measurementRevision, null);
 });
 
 test("the final transcript requests one measured readable layout", async () => {
@@ -38,11 +49,11 @@ test("a long provisional transcript becomes a bounded rolling caption", async ()
   assert.equal(resolveLiveTranscriptVisibleText({ phase: "final", text }), text);
 });
 
-test("live words hug the active edge while final text remains readable", async () => {
+test("live and final words keep one calm reading edge", async () => {
   const { resolveLiveTranscriptTextAlignment } = await load();
 
-  assert.equal(resolveLiveTranscriptTextAlignment("listening"), "right");
-  assert.equal(resolveLiveTranscriptTextAlignment("live"), "right");
-  assert.equal(resolveLiveTranscriptTextAlignment("cleanup"), "right");
+  assert.equal(resolveLiveTranscriptTextAlignment("listening"), "left");
+  assert.equal(resolveLiveTranscriptTextAlignment("live"), "left");
+  assert.equal(resolveLiveTranscriptTextAlignment("cleanup"), "left");
   assert.equal(resolveLiveTranscriptTextAlignment("final"), "left");
 });

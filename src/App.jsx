@@ -588,7 +588,7 @@ export default function App() {
               beamActive={listeningEntrance.beamActive ?? undefined}
               waveformVisible={listeningEntrance.waveformVisible}
               waveformOnlyWhileRecording={anyPanelMounted}
-              integratedWithPanel={liveTranscript.open}
+              integratedWithPanel={false}
               agentMode={agentModeActive}
               beamTheme={beamTheme}
               showExpandChevron={canReopenLiveTranscript && isHovered}
@@ -709,6 +709,9 @@ export default function App() {
           activeVoicePanelMode === "live-transcript"
             ? liveTranscriptLayout.measurementRevision
             : null
+        }
+        measurementSession={
+          activeVoicePanelMode === "live-transcript" ? liveTranscript.sessionKey : null
         }
         onPreferredHeightChange={liveTranscript.requestHeight}
         onClosingFadeComplete={assistant.completeContentFade}

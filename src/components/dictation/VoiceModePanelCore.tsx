@@ -16,6 +16,7 @@ interface VoiceModePanelCoreProps {
   horizontalDirection?: "left" | "right";
   label?: string;
   measurementRevision?: string | number | null;
+  measurementSession?: string | number | null;
   onClosingFadeComplete?: () => void;
   onPreferredHeightChange: (
     height: number,
@@ -37,6 +38,7 @@ export function VoiceModePanelCore({
   horizontalDirection = "right",
   label,
   measurementRevision = null,
+  measurementSession = null,
   onClosingFadeComplete,
   onPreferredHeightChange,
   children,
@@ -85,7 +87,7 @@ export function VoiceModePanelCore({
       stabilizeHeight={isLiveTranscript && open}
       fillAvailableHeight={mode === "assistant"}
       preferredHeightCap={isLiveTranscript ? LIVE_TRANSCRIPT_SURFACE_LIMITS.maxHeight : undefined}
-      measurementKey={mode}
+      measurementKey={isLiveTranscript ? `${mode}:${measurementSession ?? 0}` : mode}
       measurementRevision={isLiveTranscript ? measurementRevision : null}
       onPreferredHeightChange={isLiveTranscript ? onPreferredHeightChange : undefined}
       onTransitionEndCapture={handleTransitionEndCapture}

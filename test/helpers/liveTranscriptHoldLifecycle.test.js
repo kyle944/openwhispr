@@ -194,6 +194,22 @@ test("a new recording releases a hold inherited from the prior session", async (
   assert.equal(getPanel().openRef.current, false);
 });
 
+test("each recording resets the transcript measurement session", async (t) => {
+  const { getPanel, rerender } = await mountLiveTranscript(t);
+  const initialSession = getPanel().sessionKey;
+
+  await rerender({ isRecording: true });
+  const firstRecordingSession = getPanel().sessionKey;
+  await rerender({ isRecording: false });
+  await rerender({ isRecording: true });
+
+  assert.ok(firstRecordingSession > initialSession);
+  assert.ok(
+    getPanel().sessionKey > firstRecordingSession,
+    "a repeated dictation must not inherit the prior panel height floor"
+  );
+});
+
 test("hovering a final transcript pauses its active hide countdown and leaving restarts it", async (t) => {
   const { getPanel } = await mountLiveTranscript(t);
   const getFinalHideTimer = capturePanelTimers(t);

@@ -61,7 +61,23 @@
     clip-path var(--live-transcript-stage-duration, 320ms) cubic-bezier(0.2, 0, 0, 1),
     opacity 140ms ease-out,
     transform var(--live-transcript-stage-duration, 320ms) cubic-bezier(0.2, 0, 0, 1);
-  border-color: transparent;
+  border-color: color-mix(in oklch, var(--color-border) 50%, transparent);
+}
+
+/* Live Transcript grows around the unchanged resting pill anchor. The native
+   window expands up and toward the center of the screen, but these edge
+   insets stay identical to the compact control so the waveform never walks
+   diagonally when text appears or on a repeated dictation. */
+.live-transcript-panel[data-panel-direction="right"] {
+  right: 0.25rem;
+  bottom: 0.25rem;
+  left: 0.75rem;
+}
+
+.live-transcript-panel[data-panel-direction="left"] {
+  right: 0.75rem;
+  bottom: 0.25rem;
+  left: 0.25rem;
 }
 
 /* The panel border begins exactly on top of the waveform pill, then becomes
@@ -90,6 +106,12 @@
     border-radius var(--live-transcript-stage-duration, 320ms) cubic-bezier(0.2, 0, 0, 1),
     border-color 180ms ease-out,
     opacity 140ms ease-out;
+}
+
+/* The pill keeps its own border and sits above this surface. A second animated
+   outline around the same control reads as flicker during streaming updates. */
+.live-transcript-panel::before {
+  display: none;
 }
 
 .expanding-panel-surface[data-panel-mode="live-transcript"][data-panel-direction="left"]::before {
