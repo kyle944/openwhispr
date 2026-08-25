@@ -2766,23 +2766,41 @@ class IPCHandlers {
 
       const mainWindow = this.windowManager?.mainWindow;
       const targetPid = this.textEditMonitor?.lastTargetPid || null;
+      const useTargetedFastPaste =
+        process.platform === "darwin" &&
+        Number.isInteger(targetPid) &&
+        targetPid > 0 &&
+        !!this.clipboardManager.resolveFastPasteBinary?.();
 
       // Activating the target by PID is more reliable than hide()'s implicit
       // focus hand-off for Chromium apps like Claude desktop and Brave (#668).
+      // The native fast-paste helper performs this verification in the same
+      // process as Cmd+V, avoiding the AppleScript activation round trips.
       let activated = false;
-      if (process.platform === "darwin" && this.textEditMonitor) {
+      if (process.platform === "darwin" && this.textEditMonitor && !useTargetedFastPaste) {
         activated = await this.textEditMonitor.activateTargetPid();
       }
 
       const focusedOpenWhisprWindow = BrowserWindow.getFocusedWindow();
-      if (!activated && process.platform === "darwin" && focusedOpenWhisprWindow) {
+      if (
+        !activated &&
+        !useTargetedFastPaste &&
+        process.platform === "darwin" &&
+        focusedOpenWhisprWindow
+      ) {
         // The control panel is a separate BrowserWindow from the floating
         // dictation panel. Hiding only mainWindow leaves Settings/History
         // frontmost and makes an otherwise successful Cmd+V disappear into our
         // own UI. Hide the application so macOS restores the previous app.
         app.hide();
         await new Promise((resolve) => setTimeout(resolve, 120));
-      } else if (!activated && mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) {
+      } else if (
+        !activated &&
+        !useTargetedFastPaste &&
+        mainWindow &&
+        !mainWindow.isDestroyed() &&
+        mainWindow.isFocused()
+      ) {
         if (process.platform === "darwin") {
           mainWindow.hide();
           await new Promise((resolve) => setTimeout(resolve, 120));
@@ -2812,11 +2830,12 @@ class IPCHandlers {
         ...options,
         restoreClipboard: shouldRestoreClipboardAfterDictation({
           platform: process.platform,
-          targetActivated: activated,
+          targetActivated: activated || useTargetedFastPaste,
           requestedRestore: options?.restoreClipboard,
         }),
         webContents: event.sender,
         targetWindow,
+        ...(useTargetedFastPaste ? { targetPid } : {}),
       });
       debugLogger.debug("[AutoLearn] Paste completed", {
         autoLearnEnabled: this._autoLearnEnabled,

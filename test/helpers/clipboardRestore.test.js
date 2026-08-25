@@ -641,7 +641,7 @@ test("XWayland fallback remains reachable after native Wayland failure", async (
   );
 });
 
-test("pasteMacOS restores clipboard after the short macOS delay on successful fast paste", async () => {
+test("targeted macOS fast paste dispatches directly and restores the clipboard", async () => {
   const spawnCalls = [];
   const TestClipboardManager = loadClipboardManager({
     spawn: createSuccessfulSpawn(spawnCalls),
@@ -659,11 +659,13 @@ test("pasteMacOS restores clipboard after the short macOS delay on successful fa
   const result = await manager.pasteMacOS(originalClipboard, {
     expectedClipboardText: "dictated text",
     fromStreaming: true,
+    targetPid: 42,
   });
   await result.restoreComplete;
 
   assert.equal(spawnCalls.length, 1);
   assert.equal(spawnCalls[0].command, "/tmp/openwhispr-fast-paste");
+  assert.deepEqual(spawnCalls[0].args, ["--target-pid", "42"]);
   assert.equal(restoreCall.original, originalClipboard);
   assert.deepEqual(restoreCall.options, {
     delayMs: 450,

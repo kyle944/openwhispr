@@ -977,12 +977,21 @@ class ClipboardManager {
   async pasteMacOS(originalClipboard, options = {}) {
     const fastPasteBinary = this.resolveFastPasteBinary();
     const useFastPaste = !!fastPasteBinary;
-    const pasteDelay = options.fromStreaming ? (useFastPaste ? 15 : 50) : PASTE_DELAYS.darwin;
+    const targetedFastPaste =
+      useFastPaste && Number.isInteger(options.targetPid) && options.targetPid > 0;
+    const pasteDelay = targetedFastPaste
+      ? 0
+      : options.fromStreaming
+        ? useFastPaste
+          ? 15
+          : 50
+        : PASTE_DELAYS.darwin;
 
     return new Promise((resolve, reject) => {
       setTimeout(() => {
+        const pasteArgs = targetedFastPaste ? ["--target-pid", String(options.targetPid)] : [];
         const pasteProcess = useFastPaste
-          ? spawn(fastPasteBinary)
+          ? spawn(fastPasteBinary, pasteArgs)
           : spawn("osascript", [
               "-e",
               'tell application "System Events" to key code 9 using command down',
@@ -1012,7 +1021,7 @@ class ClipboardManager {
             } else {
               resolve({ restoreComplete: Promise.resolve() });
             }
-          } else if (useFastPaste) {
+          } else if (useFastPaste && !targetedFastPaste) {
             this.safeLog(
               code === 2
                 ? "CGEvent binary lacks accessibility trust, falling back to osascript"
@@ -1025,7 +1034,9 @@ class ClipboardManager {
           } else {
             this.accessibilityCache = { value: null, expiresAt: 0 };
             const stderr = errorOutput.trim();
-            const errorMsg = `Paste failed (code ${code}${stderr ? `: ${stderr}` : ""}). Text is copied to clipboard - please paste manually with Cmd+V.`;
+            const errorMsg = targetedFastPaste
+              ? `Paste target could not be activated (code ${code}). Text is copied to the clipboard.`
+              : `Paste failed (code ${code}${stderr ? `: ${stderr}` : ""}). Text is copied to clipboard - please paste manually with Cmd+V.`;
             reject(new Error(errorMsg));
           }
         });
@@ -1035,7 +1046,7 @@ class ClipboardManager {
           clearTimeout(timeoutId);
           pasteProcess.removeAllListeners();
 
-          if (useFastPaste) {
+          if (useFastPaste && !targetedFastPaste) {
             this.safeLog("CGEvent paste error, falling back to osascript");
             this.fastPasteChecked = true;
             this.fastPastePath = null;
