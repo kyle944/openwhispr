@@ -476,8 +476,6 @@ export const useAudioRecording = (toast, options = {}) => {
                 selectedContext: selectedContext ?? null,
               });
             }
-          } else {
-            window.electronAPI?.completeDictationPreview?.({ text: result.text });
           }
 
           if (result.warning) {
@@ -490,10 +488,10 @@ export const useAudioRecording = (toast, options = {}) => {
 
           const isStreaming = result.source?.includes("streaming");
           const { autoPasteEnabled, keepTranscriptionInClipboard } = getSettings();
+          let pasteSucceeded = true;
 
           if (autoPasteEnabled && !result.assistantConversation) {
             const pasteStart = performance.now();
-            let pasteSucceeded = true;
             if (result.selectionEdit?.sessionId) {
               const replacement = await window.electronAPI?.replaceSelectedText?.(
                 result.selectionEdit.sessionId,
@@ -537,6 +535,12 @@ export const useAudioRecording = (toast, options = {}) => {
             );
           } else if (keepTranscriptionInClipboard && !result.assistantConversation) {
             await navigator.clipboard.writeText(result.text);
+          }
+
+          // "Ready" is an outcome, not a promise. Publish the final preview only
+          // after automatic paste (or the requested clipboard write) has settled.
+          if (!result.assistantConversation && pasteSucceeded) {
+            window.electronAPI?.completeDictationPreview?.({ text: result.text });
           }
 
           audioManagerRef.current.saveTranscription(result.text, result.rawText ?? result.text, {
