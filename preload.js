@@ -167,6 +167,11 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("corrections-learned", listener);
     return () => ipcRenderer.removeListener("corrections-learned", listener);
   },
+  onCorrectionExampleLearned: (callback) => {
+    const listener = (_event, example) => callback?.(example);
+    ipcRenderer.on("correction-example-learned", listener);
+    return () => ipcRenderer.removeListener("correction-example-learned", listener);
+  },
   undoLearnedCorrections: (words) => ipcRenderer.invoke("undo-learned-corrections", words),
 
   // Note functions

@@ -1,7 +1,7 @@
 import { useEffect, useRef, type CSSProperties, type ReactNode, type TransitionEvent } from "react";
 import {
   LIVE_TRANSCRIPT_ENTRANCE_TIMING,
-  LIVE_TRANSCRIPT_SURFACE_LIMITS,
+  resolveLiveTranscriptSurfaceHeightCap,
 } from "../../helpers/voicePillPresentation";
 import { ExpandingPanelShell } from "./ExpandingPanelShell";
 
@@ -44,6 +44,11 @@ export function VoiceModePanelCore({
   children,
 }: VoiceModePanelCoreProps) {
   const isLiveTranscript = mode === "live-transcript";
+  const liveTranscriptHeightCap = isLiveTranscript
+    ? resolveLiveTranscriptSurfaceHeightCap(
+        typeof window === "undefined" ? undefined : window.screen?.availHeight
+      )
+    : undefined;
   // Keep one origin for the complete lifecycle. Swapping transform origins
   // once content appears makes the closing motion disagree with the entrance.
   const anchor = horizontalDirection === "left" ? "bottom-left" : "bottom-right";
@@ -86,7 +91,7 @@ export function VoiceModePanelCore({
       className={isLiveTranscript ? "live-transcript-panel" : undefined}
       stabilizeHeight={isLiveTranscript && open}
       fillAvailableHeight={mode === "assistant"}
-      preferredHeightCap={isLiveTranscript ? LIVE_TRANSCRIPT_SURFACE_LIMITS.maxHeight : undefined}
+      preferredHeightCap={liveTranscriptHeightCap}
       measurementKey={isLiveTranscript ? `${mode}:${measurementSession ?? 0}` : mode}
       measurementRevision={isLiveTranscript ? measurementRevision : null}
       onPreferredHeightChange={isLiveTranscript ? onPreferredHeightChange : undefined}

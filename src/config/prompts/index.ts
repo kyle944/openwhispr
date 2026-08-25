@@ -2,6 +2,7 @@ import i18n, { normalizeUiLanguage } from "../../i18n";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { en as enPrompts } from "../../locales/prompts";
 import { getLanguageInstruction } from "../../utils/languageSupport";
+import { appendLearnedCorrectionExamples } from "../../utils/learnedCorrectionExamples";
 import { PROMPT_KINDS, type PromptKind } from "./registry";
 
 export { PROMPT_KINDS, PROMPT_KIND_LIST, type PromptKind } from "./registry";
@@ -17,7 +18,8 @@ export interface ResolvePromptOptions {
 export function resolvePrompt(kind: PromptKind, opts: ResolvePromptOptions): string {
   const custom = useSettingsStore.getState().customPrompts[kind];
   const template = custom || getDefaultPromptText(kind, opts.uiLanguage);
-  return applySubstitutions(template, opts);
+  const resolved = applySubstitutions(template, opts);
+  return kind === "cleanup" ? appendLearnedCorrectionExamples(resolved) : resolved;
 }
 
 export function getDefaultPromptText(kind: PromptKind, uiLanguage?: string): string {

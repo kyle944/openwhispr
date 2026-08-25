@@ -2,6 +2,10 @@ import type { InferenceProvider } from "./types";
 import { withSessionRefresh } from "../../../lib/auth";
 import { getSettings } from "../../../stores/settingsStore";
 import logger from "../../../utils/logger";
+import {
+  appendLearnedCorrectionExamples,
+  hasLearnedCorrectionExamples,
+} from "../../../utils/learnedCorrectionExamples";
 
 export const openwhisprProvider: InferenceProvider = {
   id: "openwhispr",
@@ -13,9 +17,15 @@ export const openwhisprProvider: InferenceProvider = {
       hasScreenContext: !!config.screenContext,
     });
 
+    const settings = getSettings();
+    const configuredPrompt = settings.customPrompts.cleanup || "";
     const customPrompt = config.systemPrompt
       ? undefined
-      : getSettings().customPrompts.cleanup || undefined;
+      : configuredPrompt
+        ? appendLearnedCorrectionExamples(configuredPrompt)
+        : hasLearnedCorrectionExamples()
+          ? ctx.getSystemPrompt(agentName)
+          : undefined;
 
     // "agent" only rides with a screenshot (which already requires the new
     // API) — older servers reject unknown promptMode values, so plain agent

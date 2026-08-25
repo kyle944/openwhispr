@@ -57,14 +57,15 @@ test("Live Transcript entrance beats land strictly after one another", async () 
   );
 });
 
-test("Live Transcript keeps an adaptive surface instead of entering at Agent height", async () => {
-  const { LIVE_TRANSCRIPT_SURFACE_LIMITS } = await load();
+test("Live Transcript starts with one spare line and grows to the usable screen height", async () => {
+  const { LIVE_TRANSCRIPT_SURFACE_LIMITS, resolveLiveTranscriptSurfaceHeightCap } = await load();
 
   assert.deepEqual(LIVE_TRANSCRIPT_SURFACE_LIMITS, {
-    minHeight: 152,
-    maxHeight: 248,
+    minHeight: 178,
+    gutter: 24,
   });
-  assert.ok(LIVE_TRANSCRIPT_SURFACE_LIMITS.minHeight < LIVE_TRANSCRIPT_SURFACE_LIMITS.maxHeight);
+  assert.equal(resolveLiveTranscriptSurfaceHeightCap(900), 876);
+  assert.equal(resolveLiveTranscriptSurfaceHeightCap(120), 178);
 });
 
 test("voice mode direction mirrors the right baseline only for bottom-left", async () => {

@@ -13,7 +13,7 @@ const OVERRIDDEN_VOICE_SURFACE_GEOMETRY = `
     minSurfaceHeight: 120,
     maxSurfaceWidth: 700,
   };
-  export const LIVE_TRANSCRIPT_SURFACE_LIMITS = { minHeight: 91, maxHeight: 321 };
+  export const LIVE_TRANSCRIPT_SURFACE_LIMITS = { minHeight: 91, gutter: 31 };
 `;
 
 function loadWindowConfigWithGeometry(assistantPanelSizeLimits) {
@@ -22,7 +22,7 @@ function loadWindowConfigWithGeometry(assistantPanelSizeLimits) {
     if (request === "./voiceSurfaceGeometry") {
       return {
         ASSISTANT_PANEL_SIZE_LIMITS: assistantPanelSizeLimits,
-        LIVE_TRANSCRIPT_SURFACE_LIMITS: { minHeight: 91, maxHeight: 321 },
+        LIVE_TRANSCRIPT_SURFACE_LIMITS: { minHeight: 91, gutter: 31 },
       };
     }
     return originalLoad.call(this, request, parent, isMain);
@@ -77,7 +77,7 @@ test("renderer presentation consumes the shared live-transcript geometry", async
 
   assert.deepEqual(presentation.LIVE_TRANSCRIPT_SURFACE_LIMITS, {
     minHeight: 91,
-    maxHeight: 321,
+    gutter: 31,
   });
 });
 

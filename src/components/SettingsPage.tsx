@@ -3273,7 +3273,7 @@ export default function SettingsPage({
                     })}
                     description={t("settingsPage.dictionary.autoLearnDescription", {
                       defaultValue:
-                        "When you correct a transcription in the target app, the corrected word is automatically added to your dictionary.",
+                        "When you edit pasted text in the target app, OpenWhispr learns corrected terms and reusable writing preferences for future cleanup.",
                     })}
                   >
                     <Toggle checked={autoLearnCorrections} onChange={setAutoLearnCorrections} />

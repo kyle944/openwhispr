@@ -1,6 +1,9 @@
 const path = require("path");
 const { getLinuxSessionInfo } = require("./linuxSession");
-const { ASSISTANT_PANEL_SIZE_LIMITS } = require("./voiceSurfaceGeometry");
+const {
+  ASSISTANT_PANEL_SIZE_LIMITS,
+  LIVE_TRANSCRIPT_SURFACE_LIMITS,
+} = require("./voiceSurfaceGeometry");
 
 const FOCUSLESS_OVERLAY_ROLES = new Set(["main", "notification"]);
 
@@ -97,11 +100,14 @@ function fitContentWindowToWorkArea(
 }
 
 function fitAssistantContentWindowToWorkArea(requestedSurfaceHeight, workArea) {
-  const limits = ASSISTANT_PANEL_SIZE_LIMITS;
+  const limits = {
+    minSurfaceHeight: LIVE_TRANSCRIPT_SURFACE_LIMITS.minHeight,
+    gutter: LIVE_TRANSCRIPT_SURFACE_LIMITS.gutter,
+  };
   const maximumWindow = fitAssistantWindowToWorkArea(ASSISTANT_WINDOW_SIZE, workArea);
   return fitContentWindowToWorkArea(limits, requestedSurfaceHeight, {
     width: maximumWindow.width,
-    maximumSurfaceHeight: maximumWindow.height - limits.gutter,
+    maximumSurfaceHeight: Math.max(1, workArea.height - limits.gutter),
   });
 }
 

@@ -2,6 +2,17 @@ import { LIVE_TRANSCRIPT_SURFACE_LIMITS } from "./voiceSurfaceGeometry.mjs";
 
 export { LIVE_TRANSCRIPT_SURFACE_LIMITS };
 
+export function resolveLiveTranscriptSurfaceHeightCap(availableHeight) {
+  const numericHeight = Number(availableHeight);
+  const safeHeight = Number.isFinite(numericHeight)
+    ? numericHeight
+    : LIVE_TRANSCRIPT_SURFACE_LIMITS.minHeight + LIVE_TRANSCRIPT_SURFACE_LIMITS.gutter;
+  return Math.max(
+    LIVE_TRANSCRIPT_SURFACE_LIMITS.minHeight,
+    Math.floor(safeHeight - LIVE_TRANSCRIPT_SURFACE_LIMITS.gutter)
+  );
+}
+
 // The pill's two rendered footprints (px). This is a real cross-process
 // contract: WINDOW_SIZES.RECORDING in src/helpers/windowConfig.js sizes the
 // native overlay window around the compact recording pill, so these values

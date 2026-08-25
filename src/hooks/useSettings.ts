@@ -14,6 +14,7 @@ import { usePolicyStore } from "../stores/policyStore";
 import { getCleanupSystemPrompt, wrapCleanupTranscript } from "../config/prompts";
 import { resolveCleanupLanguage } from "../utils/chineseScript";
 import { getDictionaryHintWords } from "../utils/snippets";
+import { rememberLearnedCorrectionExample } from "../utils/learnedCorrectionExamples";
 
 export interface TranscriptionSettings {
   uiLanguage: string;
@@ -201,6 +202,13 @@ function useSettingsInternal() {
     });
     return unsubscribe;
   }, [applyCustomDictionaryFromExternal]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.electronAPI?.onCorrectionExampleLearned) return;
+    return window.electronAPI.onCorrectionExampleLearned((example) => {
+      rememberLearnedCorrectionExample(example);
+    });
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.electronAPI?.onSnippetsUpdated) return;

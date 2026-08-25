@@ -80,6 +80,7 @@ import {
 } from "./dictationAgentInference";
 import { resolveDictationTranslationInference } from "./dictationTranslationInference";
 import { resolvePrompt, appendScreenContextSuffix } from "../config/prompts";
+import { hasLearnedCorrectionExamples } from "../utils/learnedCorrectionExamples";
 import { syncService } from "../services/SyncService.js";
 import { evaluateFinishedRecording, withSalvageWarning } from "./recordingValidation";
 import { isEmptyRecording } from "./recordingGuard";
@@ -124,6 +125,16 @@ function getEffectiveRetentionPreferences() {
 
 const providerSupportsImages = (providerId) =>
   !!(providerId && PROVIDER_REGISTRY[providerId]?.supportsImages);
+
+function hostedCleanupPrompt(settings, agentName) {
+  if (!settings.customPrompts.cleanup && !hasLearnedCorrectionExamples()) return undefined;
+  return resolvePrompt("cleanup", {
+    agentName,
+    language: settings.preferredLanguage,
+    customDictionary: [],
+    uiLanguage: settings.uiLanguage,
+  });
+}
 
 // Shared by the agent route and its text-only retry, which needs the prompt
 // without the screen-context suffix.
@@ -2639,7 +2650,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
             agentName,
             promptMode: "cleanup",
             customDictionary: getDictionaryHintWords(settings),
-            customPrompt: this.getCustomPrompt(),
+            customPrompt: this.getCustomPrompt(settings, agentName),
             language: this.getCleanupLanguage(settings),
             locale: settings.uiLanguage || "en",
             ...(cleanup.meta || {}),
@@ -3110,7 +3121,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
               agentName,
               promptMode: "cleanup",
               customDictionary: getDictionaryHintWords(settings),
-              customPrompt: this.getCustomPrompt(),
+              customPrompt: this.getCustomPrompt(settings, agentName),
               language: this.getCleanupLanguage(settings),
               locale: settings.uiLanguage || "en",
               sttProvider: result.sttProvider,
@@ -3208,8 +3219,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     return getSettings().customDictionary;
   }
 
-  getCustomPrompt() {
-    return getSettings().customPrompts.cleanup || undefined;
+  getCustomPrompt(settings = getSettings(), agentName = null) {
+    return hostedCleanupPrompt(settings, agentName);
   }
 
   getKeyterms() {
@@ -4712,7 +4723,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
               agentName,
               promptMode: "cleanup",
               customDictionary: getDictionaryHintWords(stSettings),
-              customPrompt: this.getCustomPrompt(),
+              customPrompt: this.getCustomPrompt(stSettings, agentName),
               language: this.getCleanupLanguage(stSettings),
               locale: stSettings.uiLanguage || "en",
               sttProvider: this.getStreamingProviderName(),

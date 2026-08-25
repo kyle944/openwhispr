@@ -1176,6 +1176,9 @@ declare global {
       ) => () => void;
       setAutoLearnEnabled?: (enabled: boolean) => void;
       onCorrectionsLearned?: (callback: (words: string[]) => void) => () => void;
+      onCorrectionExampleLearned?: (
+        callback: (example: { before: string; after: string }) => void
+      ) => () => void;
       undoLearnedCorrections?: (words: string[]) => Promise<{ success: boolean }>;
 
       // Note operations
