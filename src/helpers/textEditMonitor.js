@@ -124,9 +124,19 @@ class TextEditMonitor extends EventEmitter {
     this._captureTargetPromise = this._readFrontmostPid().then((pid) => {
       this._captureTargetPromise = null;
       this._lastCaptureAt = Date.now();
-      this.lastTargetPid = pid;
-      debugLogger.debug("[TextEditMonitor] Captured target PID", { pid });
-      return pid;
+      // A focusable OpenWhispr window (for example Settings or History) can be
+      // frontmost when a global dictation starts. Treating our own PID as the
+      // target makes Cmd+V land back in OpenWhispr, after which the clipboard is
+      // restored and the transcript appears to have vanished. A null target
+      // makes the paste handler hide OpenWhispr and return focus to macOS's
+      // previous app before sending the paste.
+      const externalPid = pid === process.pid ? null : pid;
+      this.lastTargetPid = externalPid;
+      debugLogger.debug("[TextEditMonitor] Captured target PID", {
+        pid: externalPid,
+        ignoredSelf: pid === process.pid,
+      });
+      return externalPid;
     });
     return this._captureTargetPromise;
   }

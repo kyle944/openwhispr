@@ -111,6 +111,8 @@ const { normalizeStoredSpeakerCount } = require("./speakerCount");
 const { downsample24kTo16k, pcm16ToWav } = require("../utils/audioUtils");
 const postMigrationDetector = require("./postMigrationDetector");
 const screenContextCapture = require("./screenContextCapture");
+const { shouldRestoreClipboardAfterDictation } = require("./dictationPastePolicy");
+const DICTATION_STREAM_FINISH_IDLE_TIMEOUT_MS = 2500;
 const {
   DEFAULT_EXPECTED_SPEAKER_COUNT,
   MAX_SPEAKER_COUNT,
@@ -2772,7 +2774,15 @@ class IPCHandlers {
         activated = await this.textEditMonitor.activateTargetPid();
       }
 
-      if (!activated && mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) {
+      const focusedOpenWhisprWindow = BrowserWindow.getFocusedWindow();
+      if (!activated && process.platform === "darwin" && focusedOpenWhisprWindow) {
+        // The control panel is a separate BrowserWindow from the floating
+        // dictation panel. Hiding only mainWindow leaves Settings/History
+        // frontmost and makes an otherwise successful Cmd+V disappear into our
+        // own UI. Hide the application so macOS restores the previous app.
+        app.hide();
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      } else if (!activated && mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused()) {
         if (process.platform === "darwin") {
           mainWindow.hide();
           await new Promise((resolve) => setTimeout(resolve, 120));
@@ -2800,6 +2810,11 @@ class IPCHandlers {
 
       await this.clipboardManager.pasteText(textToPaste, {
         ...options,
+        restoreClipboard: shouldRestoreClipboardAfterDictation({
+          platform: process.platform,
+          targetActivated: activated,
+          requestedRestore: options?.restoreClipboard,
+        }),
         webContents: event.sender,
         targetWindow,
       });
@@ -8498,7 +8513,16 @@ class IPCHandlers {
         const stream = dictationPreviewStream;
         dictationPreviewStream = null;
         const gen = dictationPreviewGen;
-        const result = await stream.finish().catch(() => null);
+        const finishStartedAt = Date.now();
+        const result = await stream
+          .finish({ idleTimeoutMs: DICTATION_STREAM_FINISH_IDLE_TIMEOUT_MS })
+          .catch(() => null);
+        debugLogger.info("Dictation stream finish timing", {
+          durationMs: Date.now() - finishStartedAt,
+          timeoutMs: DICTATION_STREAM_FINISH_IDLE_TIMEOUT_MS,
+          truncated: result?.truncated === true,
+          textLength: result?.text?.length || 0,
+        });
         if (gen !== dictationPreviewGen) {
           return { success: true, streamed: false, text: "" };
         }
