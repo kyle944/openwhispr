@@ -37,7 +37,7 @@
     "build:mac": "npm run build:renderer && electron-builder --mac",
     "prebuild:mac:arm64": "npm run prebuild:mac",
     "build:mac:arm64": "npm run build:renderer && electron-builder --mac --arm64",
-    "build:mac:local": "npm run build:renderer && electron-builder --mac --arm64 --config.mac.identity=\"OpenWhispr Local Code Signing\" --config.mac.notarize=false",
+    "build:mac:local": "npm run build:renderer && electron-builder --mac --arm64 --config electron-builder.local.cjs",
     "prebuild:mac:x64": "npm run prebuild:mac",
     "build:mac:x64": "npm run build:renderer && electron-builder --mac --x64",
     "prebuild:win": "npm run compile:native && npm run download:whisper-cpp && npm run download:llama-server && npm run download:sherpa-onnx && npm run download:yt-dlp && npm run download:qdrant && npm run download:meeting-aec-helper && npm run download:whisper-vad-model && npm run download:diarization-models -- --output-dir resources/bin/diarization-models && npm run download:nircmd && npm run download:windows-fast-paste && npm run download:windows-key-listener && npm run download:windows-mic-listener && npm run download:windows-system-audio-helper",
