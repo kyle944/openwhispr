@@ -36,6 +36,7 @@ export function isBuiltInMicrophone(label: string): boolean {
       "webcam",
       "iphone",
       "ipad",
+      "ipod",
       // Phones connected to the computer (Continuity, Bluetooth) carry the
       // device's own name (e.g. "Galaxy Cell Microphone" from a field report) —
       // nothing above matched, so one was classified built-in, auto-selected,

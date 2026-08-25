@@ -16,6 +16,7 @@ test("a phone microphone is never classified as built-in", async () => {
   assert.equal(isBuiltInMicrophone("Galaxy Cell Microphone"), false);
   assert.equal(isBuiltInMicrophone("Someone's Phone Microphone"), false);
   assert.equal(isBuiltInMicrophone("iPhone Microphone"), false);
+  assert.equal(isBuiltInMicrophone("the ipod touch👍 Microphone"), false);
   assert.equal(isBuiltInMicrophone("Continuity Camera Microphone"), false);
 });
 
