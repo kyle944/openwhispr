@@ -69,3 +69,11 @@ test("captures refresh once the reuse window has passed", darwinOnly, async () =
   assert.equal(await m.captureTargetPid(), 2222);
   assert.equal(m.lastTargetPid, 2222);
 });
+
+test("the OpenWhispr process is never captured as its own paste target", darwinOnly, async () => {
+  const m = new TextEditMonitor();
+  m._readFrontmostPid = () => Promise.resolve(process.pid);
+
+  assert.equal(await m.captureTargetPid(), null);
+  assert.equal(m.lastTargetPid, null);
+});

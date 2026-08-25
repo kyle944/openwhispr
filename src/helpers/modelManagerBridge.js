@@ -457,6 +457,19 @@ class ModelManager {
         if (pendingWarmups === this.promptWarmTail) break;
         pendingWarmups = this.promptWarmTail;
       }
+
+      // A chat/agent/translation request uses a different prefix and can evict
+      // the cleanup prompt from llama.cpp's active cache. Mark it dirty as soon
+      // as that work is queued. Normal cleanup inference uses the same system
+      // prompt and keeps the warm marker, avoiding a redundant prefill at the
+      // start of every recording.
+      if (
+        this.promptWarmPayload &&
+        (modelId !== this.promptWarmPayload.modelId ||
+          (options.systemPrompt || "") !== this.promptWarmPayload.systemPrompt)
+      ) {
+        this.promptWarmState = null;
+      }
     }
 
     this.ensureInitialized();
@@ -648,7 +661,7 @@ class ModelManager {
 
   async prewarmLatestPrompt() {
     if (!this.promptWarmPayload) return false;
-    return this.prewarmPrompt(this.promptWarmPayload, { force: true });
+    return this.prewarmPrompt(this.promptWarmPayload);
   }
 
   async waitForPromptWarmup() {

@@ -146,6 +146,32 @@ test("cleanup prompt prewarm coalesces and invalidates when llama-server restart
   assert.equal(requests.length, 2, "a restarted server loses its prompt cache");
 });
 
+test("recording-start prewarm skips a warm cleanup prefix until other reasoning dirties it", async (t) => {
+  const { modelManager, modelId, requests } = await setupChain(t, () => completion("stop", "ok"));
+  const payload = {
+    modelId,
+    systemPrompt: "exact cleanup prompt",
+    userPrompt: "<transcript>\n\n</transcript>",
+    disableThinking: true,
+  };
+
+  await modelManager.prewarmPrompt(payload);
+  await modelManager.prewarmLatestPrompt();
+  assert.equal(requests.length, 1, "a warm prefix is not redundantly prefetched");
+
+  await modelManager.runInference(modelId, "normal dictation", {
+    systemPrompt: payload.systemPrompt,
+  });
+  await modelManager.prewarmLatestPrompt();
+  assert.equal(requests.length, 2, "normal cleanup keeps the prefix warm");
+
+  await modelManager.runInference(modelId, "chat request", {
+    systemPrompt: "different agent prompt",
+  });
+  await modelManager.prewarmLatestPrompt();
+  assert.equal(requests.length, 4, "different reasoning invalidates and restores the prefix");
+});
+
 test("changed cleanup prompts warm serially with the newest prompt last", async (t) => {
   const releases = [];
   const { modelManager, modelId, requests } = await setupChain(

@@ -1407,9 +1407,16 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     const wasCancelled = () => this._shouldAbandonProcessingPipeline(processingPipeline);
     this.micRecovery.stop();
     this.teardownSpeechGate();
-    const previewStopPromise = this.cleanupPreview({
-      showCleanup: this.shouldShowPreviewCleanupState(),
-    });
+    const previewStopPromise = (async () => {
+      const startedAt = performance.now();
+      const result = await this.cleanupPreview({
+        showCleanup: this.shouldShowPreviewCleanupState(),
+      });
+      return {
+        result,
+        durationMs: Math.round(performance.now() - startedAt),
+      };
+    })();
     this.isRecording = false;
     this.isProcessing = true;
     this.onStateChange?.({
@@ -1476,7 +1483,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       return;
     }
     // Non-commit sessions stop concurrently with the decode below.
-    const previewStop = this._streamingCommitActive ? await previewStopPromise : null;
+    const previewStopOutcome = this._streamingCommitActive ? await previewStopPromise : null;
+    const previewStop = previewStopOutcome?.result ?? null;
     if (wasCancelled()) {
       this._settleProcessingPipeline(processingPipeline);
       return;
@@ -1489,6 +1497,9 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         durationSeconds,
         ...(salvagedRecording ? { salvagedRecording: true } : {}),
         ...(previewStop?.streamed ? { streamedText: previewStop.text } : {}),
+        ...(previewStopOutcome
+          ? { previewFinalizationDurationMs: previewStopOutcome.durationMs }
+          : {}),
       },
       processingPipeline
     );
@@ -1872,6 +1883,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         audioSizeBytes: audioBlob.size,
         audioFormat: audioBlob.type,
         outputTextLength: result?.text?.length,
+        previewFinalizationDurationMs: metadata.previewFinalizationDurationMs ?? null,
       };
 
       if (useLocalWhisper) {
