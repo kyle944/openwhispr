@@ -33,7 +33,7 @@ export function LiveTranscriptPanel({
   onHoldChange,
 }: LiveTranscriptPanelProps) {
   const { t } = useTranslation();
-  const visibleText = resolveLiveTranscriptVisibleText({ phase, text });
+  const visibleText = resolveLiveTranscriptVisibleText({ text });
   const textAlignment = resolveLiveTranscriptTextAlignment(phase);
   const { scrollRef, handleScroll } = useStickToBottom<HTMLDivElement>(visibleText, {
     resetToTop: !visibleText,

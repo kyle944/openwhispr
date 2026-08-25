@@ -131,29 +131,20 @@ export function resolveLiveTranscriptEntrancePresentation(phase) {
 }
 
 /**
- * Streaming transcripts are provisional: the recognizer can replace their
- * trailing words several times before it emits a final result. Keep that churn
- * inside one compact scroll region instead of treating every rewrite as a new
- * native-window layout. The final transcript gets one measured expansion.
+ * Keep the complete transcript in the size source while speech is streaming.
+ * The panel itself caps growth at the usable screen height; only then does its
+ * scroll region begin moving older words upward.
  */
 export function resolveLiveTranscriptLayout({ phase, text }) {
   const isFinal = phase === "final";
-  const measurementText = isFinal
-    ? text
-    : resolveLiveTranscriptVisibleText({ phase, text, maxCharacters: 260 });
   return {
-    measurementText,
+    measurementText: text,
     measurementRevision: isFinal ? text : null,
   };
 }
 
-export function resolveLiveTranscriptVisibleText({ phase, text, maxCharacters = 260 }) {
-  if (phase === "final" || text.length <= maxCharacters) return text;
-
-  const tail = text.slice(-(maxCharacters - 1));
-  const firstWordBoundary = tail.indexOf(" ");
-  const visibleTail = firstWordBoundary >= 0 ? tail.slice(firstWordBoundary + 1) : tail;
-  return `…${visibleTail.trimStart()}`;
+export function resolveLiveTranscriptVisibleText({ text }) {
+  return text;
 }
 
 export function resolveLiveTranscriptTextAlignment(_phase) {
