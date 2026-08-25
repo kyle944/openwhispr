@@ -1035,9 +1035,13 @@ class IPCHandlers {
     this._autoLearnLatestData = null;
 
     try {
-      const { extractCorrections } = require("../utils/correctionLearner");
+      const {
+        extractCorrectionExample,
+        extractCorrections,
+      } = require("../utils/correctionLearner");
       const currentDict = this._getDictionarySafe();
       const corrections = extractCorrections(originalText, newFieldValue, currentDict);
+      const correctionExample = extractCorrectionExample(originalText, newFieldValue);
       debugLogger.debug("[AutoLearn] Corrections result", {
         corrections,
         dictSize: currentDict.length,
@@ -1062,6 +1066,13 @@ class IPCHandlers {
         this.windowManager.showDictationPanel();
         broadcastToWindows("corrections-learned", corrections);
         debugLogger.debug("[AutoLearn] Saved corrections", { corrections });
+      }
+      if (correctionExample) {
+        broadcastToWindows("correction-example-learned", correctionExample);
+        debugLogger.debug("[AutoLearn] Saved reusable correction example", {
+          before: correctionExample.before,
+          after: correctionExample.after,
+        });
       }
     } catch (error) {
       debugLogger.debug("[AutoLearn] Error processing corrections", { error: error.message });

@@ -35,13 +35,13 @@ test("content-sized panels shrink to their text while retaining the assistant wi
   });
 });
 
-test("content-sized panels keep a usable minimum and the existing maximum height", () => {
+test("content-sized transcript panels keep a usable minimum and grow to the work area", () => {
   assert.deepEqual(fitAssistantContentWindowToWorkArea(20, { width: 1440, height: 900 }), {
     width: 466,
-    height: 176,
+    height: 202,
   });
   assert.deepEqual(fitAssistantContentWindowToWorkArea(900, { width: 1440, height: 900 }), {
     width: 466,
-    height: 562,
+    height: 900,
   });
 });

@@ -8,7 +8,7 @@
     "maxSurfaceWidth": 600
   },
   "LIVE_TRANSCRIPT_SURFACE_LIMITS": {
-    "minHeight": 152,
-    "maxHeight": 248
+    "minHeight": 178,
+    "gutter": 24
   }
 }

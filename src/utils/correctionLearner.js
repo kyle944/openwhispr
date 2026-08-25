@@ -126,6 +126,77 @@ function findSubstitutions(origWords, editedWords) {
   return subs;
 }
 
+function sharedWordRatio(originalText, editedText) {
+  const original = tokenize(originalText).map((word) => word.toLowerCase());
+  const edited = tokenize(editedText).map((word) => word.toLowerCase());
+  if (original.length === 0 || edited.length === 0) return 0;
+
+  const counts = new Map();
+  for (const word of original) counts.set(word, (counts.get(word) || 0) + 1);
+  let shared = 0;
+  for (const word of edited) {
+    const remaining = counts.get(word) || 0;
+    if (remaining > 0) {
+      shared += 1;
+      counts.set(word, remaining - 1);
+    }
+  }
+  return shared / Math.max(original.length, edited.length);
+}
+
+function cropCorrectionPair(originalText, editedText, maxLength = 240) {
+  if (originalText.length <= maxLength && editedText.length <= maxLength) {
+    return { before: originalText, after: editedText };
+  }
+
+  let prefix = 0;
+  while (
+    prefix < originalText.length &&
+    prefix < editedText.length &&
+    originalText[prefix] === editedText[prefix]
+  ) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < originalText.length - prefix &&
+    suffix < editedText.length - prefix &&
+    originalText[originalText.length - 1 - suffix] === editedText[editedText.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  const context = 72;
+  const originalStart = Math.max(0, prefix - context);
+  const editedStart = Math.max(0, prefix - context);
+  const originalEnd = Math.min(originalText.length, originalText.length - suffix + context);
+  const editedEnd = Math.min(editedText.length, editedText.length - suffix + context);
+
+  return {
+    before: originalText.slice(originalStart, originalEnd).trim().slice(0, maxLength),
+    after: editedText.slice(editedStart, editedEnd).trim().slice(0, maxLength),
+  };
+}
+
+/**
+ * Capture one bounded before/after example that a cleanup model can reason
+ * from later. The example keeps wording, punctuation, casing and layout, while
+ * rejecting wholesale rewrites and trivial whitespace-only changes.
+ */
+function extractCorrectionExample(originalText, fieldValue) {
+  if (typeof originalText !== "string" || typeof fieldValue !== "string") return null;
+  const original = originalText.trim();
+  const edited = findEditedRegion(originalText, fieldValue).trim();
+  if (!original || !edited || original === edited) return null;
+  if (original.replace(/\s+/g, " ") === edited.replace(/\s+/g, " ")) return null;
+  if (sharedWordRatio(original, edited) < 0.55) return null;
+
+  const pair = cropCorrectionPair(original, edited);
+  if (!pair.before || !pair.after || pair.before === pair.after) return null;
+  return pair;
+}
+
 /**
  * Extract corrected words from a user's edits to pasted transcription text.
  *
@@ -176,4 +247,4 @@ function extractCorrections(originalText, fieldValue, existingDictionary) {
   return results;
 }
 
-module.exports = { extractCorrections };
+module.exports = { extractCorrectionExample, extractCorrections };

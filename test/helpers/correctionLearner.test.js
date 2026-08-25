@@ -1,7 +1,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { extractCorrections } = require("../../src/utils/correctionLearner.js");
+const {
+  extractCorrectionExample,
+  extractCorrections,
+} = require("../../src/utils/correctionLearner.js");
 
 test("null or empty inputs yield no corrections", () => {
   assert.deepEqual(extractCorrections(null, "hello", []), []);
@@ -52,4 +55,25 @@ test("the same correction appearing twice is only learned once", () => {
   const result = extractCorrections("Shunade said hi to Shunade", "Sinead said hi to Sinead", []);
   const sinead = result.filter((w) => w.toLowerCase() === "sinead");
   assert.ok(sinead.length <= 1);
+});
+
+test("a punctuation or style edit becomes a bounded reusable example", () => {
+  assert.deepEqual(
+    extractCorrectionExample(
+      "Can you send this to Kyle please?",
+      "Can you send this to Kyle, please?"
+    ),
+    {
+      before: "Can you send this to Kyle please?",
+      after: "Can you send this to Kyle, please?",
+    }
+  );
+});
+
+test("whitespace-only edits and wholesale rewrites do not become preferences", () => {
+  assert.equal(extractCorrectionExample("Keep this sentence.", "  Keep this sentence.  "), null);
+  assert.equal(
+    extractCorrectionExample("The cat sat on the mat.", "A dog sprinted through the park."),
+    null
+  );
 });

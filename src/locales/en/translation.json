@@ -2033,7 +2033,7 @@
       "add": "Add",
       "pressEnterToAdd": "Press Enter to add",
       "autoLearnTitle": "Auto-learn from corrections",
-      "autoLearnDescription": "When you correct a transcription in the target app, the corrected word is automatically added to your dictionary.",
+      "autoLearnDescription": "When you edit pasted text in the target app, OpenWhispr learns corrected terms and reusable writing preferences for future cleanup.",
       "yourWords": "Your words",
       "clearDictionaryTitle": "Clear dictionary?",
       "clearDictionaryDescription": "This will remove all words from your custom dictionary. This action cannot be undone.",
