@@ -1088,12 +1088,12 @@ a:hover {
   }
 }
 
-@keyframes toast-border-progress {
+@keyframes toast-countdown-progress {
   from {
     stroke-dashoffset: 0;
   }
   to {
-    stroke-dashoffset: 1;
+    stroke-dashoffset: 44;
   }
 }
 

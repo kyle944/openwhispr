@@ -589,6 +589,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  [data-toast-countdown-progress] {
+    animation: none !important;
+  }
+
   .expanding-panel-surface {
     transition-duration: 1ms;
   }

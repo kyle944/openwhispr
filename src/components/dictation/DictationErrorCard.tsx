@@ -20,6 +20,44 @@ const ACTION_ICONS = {
   transcript: ScrollText,
 };
 
+const DISMISS_COUNTDOWN_CIRCUMFERENCE = 44;
+
+function DismissCountdown({ duration, paused }: { duration: number; paused: boolean }) {
+  return (
+    <svg
+      className="mt-0.5 size-4 shrink-0 text-muted-foreground/70"
+      viewBox="0 0 18 18"
+      aria-hidden="true"
+    >
+      <circle
+        cx="9"
+        cy="9"
+        r="7"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        className="opacity-20"
+      />
+      <circle
+        data-toast-countdown-progress
+        cx="9"
+        cy="9"
+        r="7"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeDasharray={DISMISS_COUNTDOWN_CIRCUMFERENCE}
+        transform="rotate(-90 9 9)"
+        style={{
+          animation: `toast-countdown-progress ${duration}ms linear forwards`,
+          animationPlayState: paused ? "paused" : "running",
+        }}
+      />
+    </svg>
+  );
+}
+
 /** Shared one/two-action error surface for the floating dictation window. */
 export function DictationErrorCard({
   title,
@@ -83,13 +121,18 @@ export function DictationErrorCard({
   }, [onPreferredHeightChange]);
 
   const text = (
-    <div className="min-w-0 flex-1 break-words px-2 py-1">
-      {title && <p className="text-base font-normal leading-snug text-foreground">{title}</p>}
-      {description && (
-        <p className="mt-1 whitespace-pre-wrap text-sm leading-snug text-muted-foreground">
-          {description}
-        </p>
+    <div className="flex min-w-0 flex-1 items-start gap-2 break-words px-2 py-1">
+      {progressDuration > 0 && (
+        <DismissCountdown duration={progressDuration} paused={progressPaused} />
       )}
+      <div className="min-w-0">
+        {title && <p className="text-base font-normal leading-snug text-foreground">{title}</p>}
+        {description && (
+          <p className="mt-1 whitespace-pre-wrap text-sm leading-snug text-muted-foreground">
+            {description}
+          </p>
+        )}
+      </div>
     </div>
   );
 
@@ -129,29 +172,6 @@ export function DictationErrorCard({
         ready ? "translate-y-0 opacity-100" : "pointer-events-none translate-y-1 opacity-0"
       )}
     >
-      {progressDuration > 0 && (
-        <svg
-          className="pointer-events-none absolute inset-x-0 top-0 z-10 h-4 w-full overflow-visible text-foreground"
-          viewBox="0 0 442 17"
-          preserveAspectRatio="none"
-          aria-hidden="true"
-        >
-          <path
-            d="M 1 16 A 15 15 0 0 1 16 1 H 426 A 15 15 0 0 1 441 16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            vectorEffect="non-scaling-stroke"
-            strokeLinecap="butt"
-            pathLength="1"
-            strokeDasharray="1"
-            style={{
-              animation: `toast-border-progress ${progressDuration}ms linear forwards`,
-              animationPlayState: progressPaused ? "paused" : "running",
-            }}
-          />
-        </svg>
-      )}
       {hasSecondaryAction ? (
         <div className="px-2 py-3">
           {text}
