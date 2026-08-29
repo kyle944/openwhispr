@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.kylecooper.openwhispr-local-sync</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/kylecooper/Library/Application Support/OpenWhispr Local/sync-local-build.sh</string>
+  </array>
+  <!-- Sunday 04:00. A missed run (Mac asleep) fires on the next wake. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key><integer>0</integer>
+    <key>Hour</key><integer>4</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/kylecooper/Library/Logs/OpenWhispr Local/sync-launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/kylecooper/Library/Logs/OpenWhispr Local/sync-launchd.log</string>
+</dict>
+</plist>
