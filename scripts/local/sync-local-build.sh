@@ -72,6 +72,9 @@ npm run build:mac:local || fail "the build did not produce an app"
 # Rehearsal mode: everything that can realistically break has now run, so stop
 # here rather than swapping the app the user is currently dictating into.
 if [[ "${OPENWHISPR_SYNC_DRY_INSTALL:-0}" == "1" ]]; then
+  # Leaving the build behind would put a second bundle with the installed app's
+  # id back on disk, which is the trap this whole script exists to avoid.
+  rm -rf "$BUILD_OUT"
   echo "dry install: rebase, checks, and build all passed; installed app untouched"
   exit 0
 fi
