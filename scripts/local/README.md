@@ -30,6 +30,18 @@ release or a conflict with Kyle's changes leaves the working app exactly where i
 was and posts a notification saying the update was skipped. A conflict is the one
 case that needs a person: the log names it, and the next run retries.
 
+Two macOS details the script has to respect, both learned the hard way:
+
+Only one copy of the app may sit in `/Applications` at a time. A second bundle
+carrying the same app id makes LaunchServices choose between them, and it
+chooses silently, so the rollback copy lives in `~/Library/Caches/OpenWhispr
+Local/previous/` instead.
+
+Both builds read `~/Library/Application Support/open-whispr`, which is where
+Electron keeps its single-instance lock. While any other OpenWhispr holds that
+lock, launching this one exits immediately and reports success. That is what
+made the local build look broken while the stock app was running.
+
 Progress goes to `~/Library/Logs/OpenWhispr Local/sync.log`.
 
 Run it by hand any time:
