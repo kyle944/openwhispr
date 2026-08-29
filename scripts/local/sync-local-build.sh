@@ -45,7 +45,13 @@ if ! git rebase origin/main; then
 fi
 rebased=$(git rev-parse HEAD)
 
-ln -sfn "$REPO/resources/bin" resources/bin
+# Give the worktree its own resources/bin. A symlink here is not equivalent:
+# the Swift module cache lives inside this directory, and reaching it by two
+# paths makes swiftc report Darwin as defined twice and crash. The copy is an
+# APFS clone, so it costs no space and returns immediately.
+rm -rf resources/bin
+cp -Rc "$REPO/resources/bin" resources/bin 2>/dev/null || /usr/bin/ditto "$REPO/resources/bin" resources/bin
+rm -rf resources/bin/.swift-module-cache
 if command -v bun >/dev/null; then bun install --silent || fail "dependency install failed"
 else npm ci --silent || fail "dependency install failed"; fi
 
@@ -57,6 +63,18 @@ npm run typecheck  || fail "typecheck failed against the new upstream"
 npm test           || fail "tests failed against the new upstream"
 npm run build:mac:local || fail "the build did not produce an app"
 [[ -d "$BUILD_OUT" ]] || fail "the build output is missing"
+
+# Keep whatever binaries this upstream newly required, so the next run does not
+# download them again. Never overwrite what the repository already has.
+/usr/bin/rsync -a --ignore-existing --exclude ".swift-module-cache" \
+  resources/bin/ "$REPO/resources/bin/" 2>/dev/null || true
+
+# Rehearsal mode: everything that can realistically break has now run, so stop
+# here rather than swapping the app the user is currently dictating into.
+if [[ "${OPENWHISPR_SYNC_DRY_INSTALL:-0}" == "1" ]]; then
+  echo "dry install: rebase, checks, and build all passed; installed app untouched"
+  exit 0
+fi
 
 # Everything is green — swap the installed app.
 #
