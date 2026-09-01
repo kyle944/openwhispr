@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { useSettingsStore, initializeSettings } from "../stores/settingsStore";
 import logger from "../utils/logger";
 import { useLocalStorage } from "./useLocalStorage";
@@ -14,7 +14,10 @@ import { usePolicyStore } from "../stores/policyStore";
 import { getCleanupSystemPrompt, wrapCleanupTranscript } from "../config/prompts";
 import { resolveCleanupLanguage } from "../utils/chineseScript";
 import { getDictionaryHintWords } from "../utils/snippets";
-import { rememberLearnedCorrectionExample } from "../utils/learnedCorrectionExamples";
+import {
+  readLearnedCorrectionExamples,
+  rememberLearnedCorrectionExample,
+} from "../utils/learnedCorrectionExamples";
 
 export interface TranscriptionSettings {
   uiLanguage: string;
@@ -125,6 +128,13 @@ function useSettingsInternal() {
   // One-time initialization: sync API keys, dictation key, activation mode,
   // UI language, and dictionary from the main process / SQLite.
   const initializationRef = useRef<Promise<void> | null>(null);
+  // The cleanup system prompt ends with the LEARNED CORRECTIONS block, which lives in
+  // localStorage rather than the settings store. Learning one therefore changes the
+  // prompt without touching any dependency below, so the prefix llama.cpp has cached
+  // goes stale and the next dictation re-evaluates the whole prompt. Bump this so the
+  // pre-warm below re-runs, and note that the edit that teaches a correction is the
+  // very act that would otherwise make the next dictation the slow one.
+  const [learnedCorrectionsRevision, setLearnedCorrectionsRevision] = useState(0);
   useEffect(() => {
     if (initializationRef.current) return;
     initializationRef.current = initializeSettings();
@@ -188,6 +198,7 @@ function useSettingsInternal() {
     store.preferredLanguage,
     store.uiLanguage,
     store.customPrompts.cleanup,
+    learnedCorrectionsRevision,
   ]);
 
   // Refresh the in-memory store from main-process broadcasts (auto-learn, sync
@@ -206,7 +217,11 @@ function useSettingsInternal() {
   useEffect(() => {
     if (typeof window === "undefined" || !window.electronAPI?.onCorrectionExampleLearned) return;
     return window.electronAPI.onCorrectionExampleLearned((example) => {
-      rememberLearnedCorrectionExample(example);
+      const before = JSON.stringify(readLearnedCorrectionExamples());
+      const after = JSON.stringify(rememberLearnedCorrectionExample(example));
+      // A duplicate or rejected example leaves the prompt untouched, so re-warming
+      // it would only spend GPU time to arrive at the cache we already hold.
+      if (after !== before) setLearnedCorrectionsRevision((n) => n + 1);
     });
   }, []);
 
