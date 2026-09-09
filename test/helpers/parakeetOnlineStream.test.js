@@ -48,6 +48,8 @@ function onlineWsServerAt(port) {
   server.ready = true;
   server.process = { pid: 1 };
   server.port = port;
+  server.modelName = "nemotron-speech-streaming-en-0.6b";
+  server.modelDir = "/tmp/mock-parakeet-model";
   server.modelRuntime = "online";
   return server;
 }
@@ -240,6 +242,131 @@ test("finish is idempotent and returns the same result", async () => {
   } finally {
     await mock.close();
   }
+});
+
+test("wake probe verifies the live protocol and leaves a healthy idle server running", async () => {
+  const mock = await startMockOnlineServer({});
+  try {
+    const server = onlineWsServerAt(mock.port);
+    server.stop = async () => assert.fail("healthy wake probe must not stop the server");
+
+    const result = await server.onWakeFromSleep({ timeoutMs: 500 });
+
+    assert.equal(result.status, "healthy");
+    assert.equal(server.activeRequestCount, 0);
+  } finally {
+    await mock.close();
+  }
+});
+
+test("wake probe recycles an idle server that cannot complete the protocol", async () => {
+  const mock = await startMockOnlineServer({});
+  mock.ignoreDone();
+  try {
+    const server = onlineWsServerAt(mock.port);
+    let stopCalls = 0;
+    server.stop = async () => {
+      stopCalls += 1;
+      server.ready = false;
+    };
+
+    const result = await server.onWakeFromSleep({ timeoutMs: 30 });
+
+    assert.equal(result.status, "stopped");
+    assert.equal(stopCalls, 1);
+  } finally {
+    await mock.close();
+  }
+});
+
+test("wake recovery skips a server with an active transcription stream", async () => {
+  const mock = await startMockOnlineServer({});
+  try {
+    const server = onlineWsServerAt(mock.port);
+    let stopCalls = 0;
+    server.stop = async () => {
+      stopCalls += 1;
+    };
+    const stream = server.createOnlineStream({});
+
+    assert.equal(server.activeRequestCount, 1);
+    const result = await server.onWakeFromSleep({ timeoutMs: 30 });
+
+    assert.equal(result.status, "busy");
+    assert.equal(stopCalls, 0);
+    stream.abort();
+    assert.equal(server.activeRequestCount, 0);
+  } finally {
+    await mock.close();
+  }
+});
+
+test("starting user work cancels a background wake probe", async () => {
+  const mock = await startMockOnlineServer({});
+  try {
+    const server = onlineWsServerAt(mock.port);
+    let abortCalls = 0;
+    server.wakeProbeController = {
+      abort() {
+        abortCalls += 1;
+      },
+    };
+
+    const stream = server.createOnlineStream({});
+
+    assert.equal(abortCalls, 1);
+    stream.abort();
+  } finally {
+    await mock.close();
+  }
+});
+
+test("wake recovery does not recycle after user activity overlaps a failing probe", async () => {
+  const mock = await startMockOnlineServer({});
+  try {
+    const server = onlineWsServerAt(mock.port);
+    let rejectProbe;
+    server._probeFunctionalHealth = () =>
+      new Promise((_, reject) => {
+        rejectProbe = reject;
+      });
+    let stopCalls = 0;
+    server.stop = async () => {
+      stopCalls += 1;
+    };
+
+    const recovery = server.onWakeFromSleep({ timeoutMs: 30 });
+    const stream = server.createOnlineStream({});
+    stream.abort();
+    rejectProbe(new Error("stalled"));
+
+    const result = await recovery;
+    assert.equal(result.status, "busy");
+    assert.equal(stopCalls, 0);
+  } finally {
+    await mock.close();
+  }
+});
+
+test("wake recovery does not stop a replacement process after the probe fails", async () => {
+  const server = onlineWsServerAt(1);
+  let rejectProbe;
+  server._probeFunctionalHealth = () =>
+    new Promise((_, reject) => {
+      rejectProbe = reject;
+    });
+  let stopCalls = 0;
+  server.stop = async () => {
+    stopCalls += 1;
+  };
+
+  const recovery = server.onWakeFromSleep({ timeoutMs: 30 });
+  server.process = { pid: 2 };
+  rejectProbe(new Error("old process stalled"));
+
+  const result = await recovery;
+  assert.equal(result.status, "busy");
+  assert.equal(stopCalls, 0);
 });
 
 test("offline transcription rejects with AbortError when cancelled mid-flight", async () => {

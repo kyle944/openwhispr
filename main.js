@@ -1199,6 +1199,9 @@ async function startApp() {
       whisperManager?.onWakeFromSleep().catch((err) => {
         debugLogger.debug("whisper wake re-warm error (non-fatal)", { error: err.message });
       });
+      parakeetManager?.onWakeFromSleep().catch((err) => {
+        debugLogger.debug("parakeet wake recovery error (non-fatal)", { error: err.message });
+      });
     }, WHISPER_WAKE_REWARM_DELAY_MS);
   });
 

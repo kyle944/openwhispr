@@ -30,6 +30,10 @@ const FLOAT32_BYTES_PER_SECOND = 16000 * FLOAT32_BYTES_PER_SAMPLE;
 const ONLINE_TIMEOUT_PER_AUDIO_SECOND_MS = 2000;
 // After "Done" is sent, give up only after this long without any result message.
 const ONLINE_FINISH_IDLE_TIMEOUT_MS = 10000;
+// A one-second silent decode normally completes in about five seconds on the
+// bundled online model. Leave enough headroom for a contended CPU without
+// letting wake recovery hang behind a wedged sidecar.
+const WAKE_HEALTH_TIMEOUT_MS = 15000;
 // Must cover the model's 560ms chunk so the flush decodes the final words.
 const ONLINE_END_TAIL_PADDING_S = 0.6;
 
@@ -45,6 +49,10 @@ class ParakeetWsServer {
     this.startingModelName = null;
     this.healthCheckInterval = null;
     this.cachedBinaryPaths = {};
+    this.activeRequestCount = 0;
+    this.activityGeneration = 0;
+    this.wakeRecoveryPromise = null;
+    this.wakeProbeController = null;
   }
 
   getWsBinaryPath(runtime = "offline") {
@@ -254,8 +262,21 @@ class ParakeetWsServer {
     }
   }
 
-  // signal is optional; dictation and warm-up flows never pass one.
-  transcribe(samplesBuffer, sampleRate, { signal } = {}) {
+  _beginActivity() {
+    // User work wins over the background wake probe. Cancelling it avoids
+    // competing for a sherpa worker while the user starts dictating.
+    this.wakeProbeController?.abort();
+    this.activeRequestCount += 1;
+    this.activityGeneration += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.activeRequestCount = Math.max(0, this.activeRequestCount - 1);
+    };
+  }
+
+  _runTranscription(samplesBuffer, sampleRate, signal) {
     if (!this.ready || !this.process) {
       throw new Error("parakeet-ws server is not running");
     }
@@ -265,6 +286,19 @@ class ParakeetWsServer {
     }
 
     return this._transcribeOffline(samplesBuffer, sampleRate, signal);
+  }
+
+  // signal is optional; dictation and warm-up flows never pass one.
+  transcribe(samplesBuffer, sampleRate, { signal } = {}) {
+    const releaseActivity = this._beginActivity();
+    try {
+      return Promise.resolve(this._runTranscription(samplesBuffer, sampleRate, signal)).finally(
+        releaseActivity
+      );
+    } catch (error) {
+      releaseActivity();
+      throw error;
+    }
   }
 
   _transcribeOffline(samplesBuffer, sampleRate, signal) {
@@ -364,11 +398,14 @@ class ParakeetWsServer {
     let streamError = null;
     let timedOut = false;
 
-    const stream = this.createOnlineStream({
-      onError: (error) => {
-        streamError = error;
+    const stream = this._createOnlineStream(
+      {
+        onError: (error) => {
+          streamError = error;
+        },
       },
-    });
+      false
+    );
 
     debugLogger.debug("parakeet-ws sending streaming audio", {
       samplesBytes: samplesBuffer.length,
@@ -413,6 +450,10 @@ class ParakeetWsServer {
   }
 
   createOnlineStream({ onUpdate, onError } = {}) {
+    return this._createOnlineStream({ onUpdate, onError }, true);
+  }
+
+  _createOnlineStream({ onUpdate, onError } = {}, trackActivity = true) {
     if (!this.ready || !this.process) {
       throw new Error("parakeet-ws server is not running");
     }
@@ -431,8 +472,15 @@ class ParakeetWsServer {
     let serverDone = false;
     let truncated = false;
     let lastEmitted = "";
+    const releaseActivity = trackActivity ? this._beginActivity() : null;
 
-    const ws = new WebSocket(`ws://127.0.0.1:${this.port}`);
+    let ws;
+    try {
+      ws = new WebSocket(`ws://127.0.0.1:${this.port}`);
+    } catch (error) {
+      releaseActivity?.();
+      throw error;
+    }
 
     const clearIdleTimer = () => {
       if (idleTimer) {
@@ -445,6 +493,7 @@ class ParakeetWsServer {
       if (closed) return;
       closed = true;
       clearIdleTimer();
+      releaseActivity?.();
       if (finishResolve) finishResolve({ text: results.text(), truncated });
     };
 
@@ -554,7 +603,75 @@ class ParakeetWsServer {
     };
   }
 
+  async _probeFunctionalHealth(timeoutMs = WAKE_HEALTH_TIMEOUT_MS) {
+    const controller = new AbortController();
+    this.wakeProbeController = controller;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    timeout.unref?.();
+    try {
+      const sampleRate = 16000;
+      const silentSamples = Buffer.alloc(sampleRate * FLOAT32_BYTES_PER_SAMPLE);
+      const result = await this._runTranscription(silentSamples, sampleRate, controller.signal);
+      if (!result || typeof result.text !== "string" || result.truncated) {
+        throw new Error("parakeet-ws wake probe returned an incomplete response");
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (this.wakeProbeController === controller) this.wakeProbeController = null;
+    }
+  }
+
+  async onWakeFromSleep({ timeoutMs = WAKE_HEALTH_TIMEOUT_MS } = {}) {
+    if (this.wakeRecoveryPromise) return this.wakeRecoveryPromise;
+    if (!this.ready || !this.process || !this.modelName || !this.modelDir) {
+      return { status: "inactive" };
+    }
+    if (this.activeRequestCount > 0) {
+      return { status: "busy" };
+    }
+
+    const activityGeneration = this.activityGeneration;
+    const probedProcess = this.process;
+    const recovery = (async () => {
+      let failure = null;
+      try {
+        await this._probeFunctionalHealth(timeoutMs);
+      } catch (error) {
+        failure = error;
+      }
+
+      // A recording or batch decode that overlapped the probe owns the server.
+      // Its activity may have already settled, so check both current count and
+      // the generation captured before the probe.
+      if (
+        this.activeRequestCount > 0 ||
+        this.activityGeneration !== activityGeneration ||
+        this.process !== probedProcess
+      ) {
+        return { status: "busy" };
+      }
+      if (!failure) return { status: "healthy" };
+
+      debugLogger.warn("parakeet-ws wake probe failed; recycling idle server", {
+        error: failure.message,
+      });
+      // stop() begins terminating the process synchronously before its first
+      // await, so no user request can enter between the idle check and recycle.
+      await this.stop();
+      return { status: "stopped", reason: failure.message };
+    })();
+
+    this.wakeRecoveryPromise = recovery;
+    try {
+      return await recovery;
+    } finally {
+      if (this.wakeRecoveryPromise === recovery) this.wakeRecoveryPromise = null;
+    }
+  }
+
   async stop() {
+    this.wakeProbeController?.abort();
+    this.wakeProbeController = null;
     this.stopHealthCheck();
 
     if (!this.process) {
@@ -562,14 +679,21 @@ class ParakeetWsServer {
       return;
     }
 
+    const processToStop = this.process;
+    // Close the admission gate before signalling the child. A dictation that
+    // starts during graceful shutdown must go through start() and replace it.
+    this.ready = false;
     debugLogger.debug("Stopping parakeet-ws server");
 
     try {
-      await gracefulStopProcess(this.process);
+      await gracefulStopProcess(processToStop);
     } catch (error) {
       debugLogger.error("Error stopping parakeet-ws server", { error: error.message });
     }
 
+    // Another start can replace the child while graceful shutdown awaits its
+    // close event. Never clear the replacement's state from the older stop.
+    if (this.process !== processToStop) return;
     this.process = null;
     this.ready = false;
     this.port = null;

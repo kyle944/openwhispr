@@ -197,6 +197,10 @@ class ParakeetManager {
     return this.serverManager.getServerStatus();
   }
 
+  onWakeFromSleep(options) {
+    return this.serverManager.onWakeFromSleep(options);
+  }
+
   supportsOnlineStreaming(modelName) {
     return getModelRuntime(modelName) === "online";
   }

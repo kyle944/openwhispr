@@ -234,6 +234,10 @@ class ParakeetServerManager {
     return this.wsServer.getStatus();
   }
 
+  onWakeFromSleep(options) {
+    return this.wsServer.onWakeFromSleep(options);
+  }
+
   createOnlineStream(options) {
     return this.wsServer.createOnlineStream(options);
   }
