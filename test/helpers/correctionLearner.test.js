@@ -151,3 +151,35 @@ test("a huge append is rejected before token alignment", () => {
   assert.deepEqual(extractCorrections(original, hugeAppend, [], initial), []);
   assert.equal(extractCorrectionExample(original, hugeAppend, initial), null);
 });
+
+test("ambiguous additions beside a corrected final word fail closed", () => {
+  for (const [original, edited] of [
+    ["We should meet tomorrow.", "We should meet Friday extra. "],
+    ["We should meet tomorrow.", "We should meet Friday tomorrow. "],
+    ["Call John and thank John.", "Call John and thank Jon John. "],
+  ]) {
+    const initial = `${original} `;
+    assert.deepEqual(extractCorrections(original, edited, [], initial), []);
+    assert.equal(extractCorrectionExample(original, edited, initial), null);
+  }
+});
+
+test("a one-character correction inside a long token stays bounded and learnable", () => {
+  const originalWord = `${"a".repeat(5000)}x${"b".repeat(5000)}`;
+  const correctedWord = `${"a".repeat(5000)}y${"b".repeat(5000)}`;
+  const original = `Keep ${originalWord} here.`;
+  const initial = `${original} `;
+  const edited = `Keep ${correctedWord} here. `;
+
+  assert.deepEqual(extractCorrections(original, edited, [], initial), [correctedWord]);
+  assert.ok(extractCorrectionExample(original, edited, initial));
+});
+
+test("a wholly changed giant token fails closed without a full character matrix", () => {
+  const original = `Keep ${"a".repeat(10_000)} here.`;
+  const initial = `${original} `;
+  const edited = `Keep ${"b".repeat(10_000)} here. `;
+
+  assert.deepEqual(extractCorrections(original, edited, [], initial), []);
+  assert.equal(extractCorrectionExample(original, edited, initial), null);
+});

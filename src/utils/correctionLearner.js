@@ -3,25 +3,50 @@
  * the edited field value. Returns corrected words to add to the custom dictionary.
  */
 
-/** Levenshtein edit distance between two strings */
-function editDistance(a, b) {
-  const m = a.length;
-  const n = b.length;
-  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+const MAX_CHARACTER_ALIGNMENT_CELLS = 1_000_000;
 
-  for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
+/**
+ * Levenshtein edit distance between two strings. Equal edges are trimmed and
+ * the remaining matrix uses rolling rows; broadly changed giant tokens fail
+ * closed instead of blocking Electron's main thread.
+ */
+function editDistance(a, b) {
+  let prefix = 0;
+  while (prefix < a.length && prefix < b.length && a[prefix] === b[prefix]) prefix += 1;
+
+  let suffix = 0;
+  while (
+    suffix < a.length - prefix &&
+    suffix < b.length - prefix &&
+    a[a.length - 1 - suffix] === b[b.length - 1 - suffix]
+  ) {
+    suffix += 1;
+  }
+
+  let left = a.slice(prefix, a.length - suffix);
+  let right = b.slice(prefix, b.length - suffix);
+  if (left.length === 0) return right.length;
+  if (right.length === 0) return left.length;
+  if (left.length * right.length > MAX_CHARACTER_ALIGNMENT_CELLS) return Infinity;
+
+  if (right.length > left.length) [left, right] = [right, left];
+  const m = left.length;
+  const n = right.length;
+  let previous = Array.from({ length: n + 1 }, (_, index) => index);
 
   for (let i = 1; i <= m; i++) {
+    const current = Array(n + 1).fill(0);
+    current[0] = i;
     for (let j = 1; j <= n; j++) {
-      if (a[i - 1] === b[j - 1]) {
-        dp[i][j] = dp[i - 1][j - 1];
+      if (left[i - 1] === right[j - 1]) {
+        current[j] = previous[j - 1];
       } else {
-        dp[i][j] = 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+        current[j] = 1 + Math.min(previous[j], current[j - 1], previous[j - 1]);
       }
     }
+    previous = current;
   }
-  return dp[m][n];
+  return previous[n];
 }
 
 /** Tokenize text into words, stripping punctuation from edges */
@@ -154,44 +179,44 @@ function hasBoundaryWordInsertion(originalWords, editedWords) {
   const m = original.length;
   const n = edited.length;
   if (m === 0) {
-    return n > 0 && (prefix === 0 || prefix === totalOriginalWords);
+    // With no changed source token, a lexical insertion is indistinguishable
+    // from adjacent prose. A real split retains the source token in this
+    // changed window and is handled by the alignment below.
+    return n > 0;
   }
   if (n === 0) return false;
   if (m * n > MAX_ALIGNMENT_CELLS) return true;
 
   const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  const boundaryInsertion = Array.from({ length: m + 1 }, () => Array(n + 1).fill(false));
   for (let i = 0; i <= m; i++) dp[i][0] = i;
-  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let j = 1; j <= n; j++) {
+    dp[0][j] = j;
+    boundaryInsertion[0][j] = prefix === 0;
+  }
 
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
       const substitutionCost =
         original[i - 1].toLowerCase() === edited[j - 1].toLowerCase() ? 0 : 1;
-      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + substitutionCost);
+      const deletion = dp[i - 1][j] + 1;
+      const insertion = dp[i][j - 1] + 1;
+      const substitution = dp[i - 1][j - 1] + substitutionCost;
+      const best = Math.min(deletion, insertion, substitution);
+      dp[i][j] = best;
+
+      let hasBoundaryInsertion = false;
+      if (deletion === best) hasBoundaryInsertion ||= boundaryInsertion[i - 1][j];
+      if (substitution === best) hasBoundaryInsertion ||= boundaryInsertion[i - 1][j - 1];
+      if (insertion === best) {
+        const insertionAt = prefix + i;
+        hasBoundaryInsertion ||=
+          boundaryInsertion[i][j - 1] || insertionAt === 0 || insertionAt === totalOriginalWords;
+      }
+      boundaryInsertion[i][j] = hasBoundaryInsertion;
     }
   }
-
-  let i = m;
-  let j = n;
-  while (i > 0 || j > 0) {
-    if (
-      i > 0 &&
-      j > 0 &&
-      dp[i][j] ===
-        dp[i - 1][j - 1] + (original[i - 1].toLowerCase() === edited[j - 1].toLowerCase() ? 0 : 1)
-    ) {
-      i -= 1;
-      j -= 1;
-    } else if (i > 0 && dp[i][j] === dp[i - 1][j] + 1) {
-      i -= 1;
-    } else {
-      const insertionAt = prefix + i;
-      if (insertionAt === 0 || insertionAt === totalOriginalWords) return true;
-      j -= 1;
-    }
-  }
-
-  return false;
+  return boundaryInsertion[m][n];
 }
 
 function resolveEditedRegion(originalText, fieldValue, initialFieldValue) {
@@ -325,7 +350,9 @@ function extractCorrectionExample(originalText, fieldValue, initialFieldValue) {
   const edited = editedRegion.trim();
   if (!original || !edited || original === edited) return null;
   if (original.replace(/\s+/g, " ") === edited.replace(/\s+/g, " ")) return null;
-  if (sharedWordRatio(original, edited) < 0.55 && sharedCharacterRatio(original, edited) < 0.7) {
+  const characterRatio = sharedCharacterRatio(original, edited);
+  if (!Number.isFinite(characterRatio)) return null;
+  if (sharedWordRatio(original, edited) < 0.55 && characterRatio < 0.7) {
     return null;
   }
 
