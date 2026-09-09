@@ -20,6 +20,10 @@ jobs:
         run: |
           tests=(test/helpers/audioManager*.test.js test/helpers/preparedMicCapture.test.js)
           ELECTRON_OVERRIDE_DIST_PATH=/tmp node --test "${tests[@]}"
+      - name: Verify native silent audio graph
+        run: |
+          node node_modules/electron/install.js
+          xvfb-run -a node_modules/electron/dist/electron --no-sandbox test/electron/silentCapture.cjs
       - run: npm run typecheck
       - run: npm run build:renderer
       - name: Record renderer source and hashes
