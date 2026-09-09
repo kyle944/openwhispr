@@ -29,19 +29,34 @@ case "$name" in
   PlistBuddy) print "com.kylecooper.openwhispr.local" ;;
   codesign)
     if [[ "\${MOCK_BAD_INSTALLED:-0}" == 1 && "$*" == *"$MOCK_INSTALLED_APP"* ]]; then exit 1; fi
-    if [[ "$*" == *"-dv"* ]]; then print -u2 "Authority=OpenWhispr Local Code Signing"; fi ;;
+    if [[ "$*" == *"-r-"* ]]; then
+      if [[ "\${MOCK_BAD_REQUIREMENT:-0}" == 1 ]]; then
+        print -u2 'designated => identifier "com.kylecooper.openwhispr.local" and certificate root = H"0000000000000000000000000000000000000000"'
+      else
+        print -u2 'designated => identifier "com.kylecooper.openwhispr.local" and certificate root = H"fe9441e0b69e6b0721bed7673c841583b8bfcb8f"'
+      fi
+    fi ;;
   mktemp) /usr/bin/mktemp -d "$MOCK_TMP_ROOT/install.XXXXXX" ;;
   pgrep)
     if [[ "\${MOCK_MODE:-}" == shutdown-failure ]]; then print 999; exit 0; fi
+    if [[ "\${MOCK_MODE:-}" == multiple-old-pids && -f "$MOCK_STATE/old-pids" ]]; then /bin/cat "$MOCK_STATE/old-pids"; exit 0; fi
     [[ -f "$MOCK_STATE/launched" ]] && { print 999; exit 0; }
     exit 1 ;;
-  kill) [[ "\${MOCK_MODE:-}" == shutdown-failure ]] && exit 0; exit 1 ;;
+  kill)
+    print -r -- "$*" >> "$MOCK_STATE/kill-log"
+    if [[ "\${MOCK_MODE:-}" == shutdown-failure ]]; then exit 0; fi
+    if [[ "\${MOCK_MODE:-}" == multiple-old-pids && "$1" == -TERM ]]; then /bin/rm -f "$MOCK_STATE/old-pids"; fi
+    exit 1 ;;
   sleep) : ;;
   ditto)
     if [[ "\${MOCK_MODE:-}" == copy-failure ]]; then /bin/mkdir -p "$2"; exit 1; fi
     /bin/cp -R "$1" "$2" ;;
   open)
     if [[ "\${MOCK_MODE:-}" != launch-failure ]]; then /usr/bin/touch "$MOCK_STATE/launched"; fi ;;
+  mv)
+    if [[ "\${MOCK_PRESERVE_MOVE_FAILURE:-0}" == 1 && "$2" == *"/failed/"* ]]; then exit 1; fi
+    if [[ "\${MOCK_RESTORE_MOVE_FAILURE:-0}" == 1 && "$1" == *".previous.bundle" ]]; then exit 1; fi
+    /bin/mv "$@" ;;
   *) /bin/"$name" "$@" ;;
 esac
 `
@@ -88,6 +103,7 @@ function runInstall(mode = "", extraEnv = {}) {
     const state = path.join(root, "state");
     const failed = path.join(root, "failed");
     fs.mkdirSync(state, { recursive: true });
+    if (mode === "multiple-old-pids") fs.writeFileSync(path.join(state, "old-pids"), "101\n102\n");
     makeBundle(app, "original");
     makeBundle(build, "candidate");
     const commands = makeMockCommands(path.join(root, "commands"));
@@ -122,8 +138,24 @@ function marker(app) {
   return fs.readFileSync(path.join(app, "Contents", "MacOS", "OpenWhispr"), "utf8");
 }
 
+function preservedPrevious(root) {
+  const installDir = fs.readdirSync(root).find((entry) => entry.startsWith("install."));
+  return installDir && path.join(root, installDir, "OpenWhispr Local.previous.bundle");
+}
+
 test("installer leaves the original app in place when shutdown fails before swap", () => {
   const fixture = runInstall("shutdown-failure");
+  try {
+    assert.equal(fixture.result.ok, false);
+    assert.equal(marker(fixture.app), "original", fixture.result.stderr);
+    assert.equal(fs.existsSync(fixture.failed), false);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("installer rejects a candidate without the pinned signing root before swap", () => {
+  const fixture = runInstall("", { MOCK_BAD_REQUIREMENT: "1" });
   try {
     assert.equal(fixture.result.ok, false);
     assert.equal(marker(fixture.app), "original", fixture.result.stderr);
@@ -161,6 +193,42 @@ test("installer restores original and preserves candidate when launch confirmati
     assert.equal(fixture.result.ok, false);
     assert.equal(marker(fixture.app), "original", fixture.result.stderr);
     assert.equal(fs.readdirSync(fixture.failed).length, 1);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("installer retains the previous bundle when failed-candidate preservation fails", () => {
+  const fixture = runInstall("launch-failure", { MOCK_PRESERVE_MOVE_FAILURE: "1" });
+  try {
+    assert.equal(fixture.result.ok, false);
+    assert.equal(marker(fixture.app), "candidate", fixture.result.stderr);
+    assert.equal(marker(preservedPrevious(fixture.root)), "original");
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("installer retains the previous bundle when restoration move fails", () => {
+  const fixture = runInstall("launch-failure", { MOCK_RESTORE_MOVE_FAILURE: "1" });
+  try {
+    assert.equal(fixture.result.ok, false);
+    assert.equal(fs.existsSync(fixture.app), false);
+    assert.equal(marker(preservedPrevious(fixture.root)), "original");
+    assert.equal(fs.readdirSync(fixture.failed).length, 1);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("installer terminates every old PID before accepting a new launch", () => {
+  const fixture = runInstall("multiple-old-pids");
+  try {
+    assert.equal(fixture.result.ok, true, fixture.result.stderr);
+    const killed = fs.readFileSync(path.join(fixture.root, "state", "kill-log"), "utf8");
+    assert.match(killed, /-TERM 101/);
+    assert.match(killed, /-TERM 102/);
+    assert.equal(marker(fixture.app), "candidate");
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }
