@@ -86,6 +86,7 @@ class TextEditMonitor extends EventEmitter {
     this.process = null;
     this.currentOriginalText = null;
     this._initialFieldValue = null;
+    this._lastEmittedValue = null;
     this.timeout = null;
     this._pollInterval = null;
     this._lastValue = null;
@@ -489,6 +490,7 @@ class TextEditMonitor extends EventEmitter {
     }
     this._lastValue = null;
     this._initialFieldValue = null;
+    this._lastEmittedValue = null;
     this._stdoutBuffer = "";
     if (this.process) {
       try {
@@ -531,6 +533,8 @@ class TextEditMonitor extends EventEmitter {
     ) {
       return;
     }
+    if (newFieldValue === this._lastEmittedValue) return;
+    this._lastEmittedValue = newFieldValue;
 
     debugLogger.debug("[TextEditMonitor] Text changed", {
       newFieldValue: newFieldValue.substring(0, 80),
@@ -545,12 +549,16 @@ class TextEditMonitor extends EventEmitter {
   _handleProcessLine(line) {
     if (line.startsWith("INITIAL_VALUE_B64:")) {
       const decoded = this._decodeBase64Payload(line.slice("INITIAL_VALUE_B64:".length));
-      if (decoded !== null) this._initialFieldValue = decoded;
+      if (decoded !== null) {
+        this._initialFieldValue = decoded;
+        this._lastEmittedValue = decoded;
+      }
       return;
     }
 
     if (line.startsWith("INITIAL_VALUE:")) {
       this._initialFieldValue = line.slice("INITIAL_VALUE:".length);
+      this._lastEmittedValue = this._initialFieldValue;
       return;
     }
 
@@ -747,6 +755,7 @@ class TextEditMonitor extends EventEmitter {
 
     this._lastValue = initialValue;
     this._initialFieldValue = initialValue;
+    this._lastEmittedValue = initialValue;
     debugLogger.debug("[TextEditMonitor] macOS: initial value", {
       valuePreview: initialValue.substring(0, 80),
       attempt,
@@ -765,14 +774,7 @@ class TextEditMonitor extends EventEmitter {
 
       if (currentValue !== this._lastValue) {
         this._lastValue = currentValue;
-        debugLogger.debug("[TextEditMonitor] macOS: text changed", {
-          newValuePreview: currentValue.substring(0, 80),
-        });
-        this.emit("text-edited", {
-          originalText: this.currentOriginalText,
-          initialFieldValue: this._initialFieldValue,
-          newFieldValue: currentValue,
-        });
+        this._emitTextEdited(currentValue);
       }
     }, POLL_INTERVAL_MS);
 

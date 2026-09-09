@@ -67,6 +67,62 @@ test("monitor fails closed when a changed line arrives before the baseline", () 
   assert.equal(emitted, false);
 });
 
+test("monitor suppresses repeated identical native change notifications", () => {
+  const m = new TextEditMonitor();
+  m.currentOriginalText = "Please invite Michael tomorrow.";
+  const values = [];
+  m.on("text-edited", (event) => values.push(event.newFieldValue));
+
+  m._handleProcessStdoutChunk(
+    "INITIAL_VALUE:Please invite Michael tomorrow. \n" +
+      "CHANGED:Please invite Mikhail tomorrow. \n" +
+      "CHANGED:Please invite Mikhail tomorrow. \n" +
+      "CHANGED:Please invite Mikhail tomorrow. \n"
+  );
+
+  assert.deepEqual(values, ["Please invite Mikhail tomorrow. "]);
+});
+
+test("monitor emits new values and a legitimate change back", () => {
+  const m = new TextEditMonitor();
+  m.currentOriginalText = "Please invite Michael tomorrow.";
+  const values = [];
+  m.on("text-edited", (event) => values.push(event.newFieldValue));
+
+  m._handleProcessStdoutChunk(
+    "INITIAL_VALUE:Please invite Michael tomorrow. \n" +
+      "CHANGED:Please invite Mikhail tomorrow. \n" +
+      "CHANGED:Please invite Mikael tomorrow. \n" +
+      "CHANGED:Please invite Mikhail tomorrow. \n"
+  );
+
+  assert.deepEqual(values, [
+    "Please invite Mikhail tomorrow. ",
+    "Please invite Mikael tomorrow. ",
+    "Please invite Mikhail tomorrow. ",
+  ]);
+});
+
+test("a new monitoring session can emit the same edit again", () => {
+  const m = new TextEditMonitor();
+  const values = [];
+  m.on("text-edited", (event) => values.push(event.newFieldValue));
+
+  for (let session = 0; session < 2; session += 1) {
+    m.stopMonitoring();
+    m.currentOriginalText = "Please invite Michael tomorrow.";
+    m._handleProcessStdoutChunk(
+      "INITIAL_VALUE:Please invite Michael tomorrow. \n" +
+        "CHANGED:Please invite Mikhail tomorrow. \n"
+    );
+  }
+
+  assert.deepEqual(values, [
+    "Please invite Mikhail tomorrow. ",
+    "Please invite Mikhail tomorrow. ",
+  ]);
+});
+
 test("startMonitoring stops immediately without a target PID", darwinOnly, () => {
   const m = new TextEditMonitor();
   m.startMonitoring("pasted text", 5000, { targetPid: null });
