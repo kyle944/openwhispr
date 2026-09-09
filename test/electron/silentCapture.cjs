@@ -5,14 +5,15 @@ app.whenReady().then(async () => {
     show: false,
     webPreferences: { autoplayPolicy: "no-user-gesture-required" },
   });
-  await win.loadURL("data:text/html,<title>Silent capture verification</title>");
+  await win.loadFile(require("path").join(__dirname, "silentCapture.html"));
   try {
     const result = await win.webContents.executeJavaScript(`(async () => {
+      if (!isSecureContext) throw new Error("Capture fixture must use the app file origin");
       const results = [];
       for (const options of [{sinkId: {type: "none"}}, {sampleRate: 16000, sinkId: {type: "none"}}]) {
         const ctx = new AudioContext(options);
         try {
-          if (ctx.sinkId?.type !== "none") throw new Error("Physical output selected");
+          if (ctx.sinkId?.type !== "none") throw new Error("Silent sink unavailable: " + JSON.stringify({sink: ctx.sinkId, secure: isSecureContext}));
           await ctx.resume();
           const oscillator = ctx.createOscillator();
           const analyser = ctx.createAnalyser();
