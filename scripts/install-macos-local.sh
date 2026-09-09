@@ -49,15 +49,34 @@ previous_moved=false
 candidate_installed=false
 launch_succeeded=false
 failed_candidate=""
+recovery_previous=""
 
 preserve_failed_candidate() {
   [[ -d "$installed_app" ]] || return 0
   if [[ -z "$failed_candidate" ]]; then
     failed_candidate="$failed_root/OpenWhispr Local.failed.$(/bin/date +%Y%m%d-%H%M%S).$$.bundle"
   fi
-  /bin/mkdir -p "$failed_root"
-  /bin/mv "$installed_app" "$failed_candidate"
+  if ! /bin/mkdir -p "$failed_root"; then
+    return 1
+  fi
+  if ! /bin/mv "$installed_app" "$failed_candidate"; then
+    return 1
+  fi
   print -u2 "Failed candidate preserved at: $failed_candidate"
+}
+
+preserve_previous_recovery() {
+  [[ -d "$previous_app" ]] || return 0
+  if [[ -z "$recovery_previous" ]]; then
+    recovery_previous="$failed_root/recovery/OpenWhispr Local.previous.$(/bin/date +%Y%m%d-%H%M%S).$$.bundle"
+  fi
+  if ! /bin/mkdir -p "${recovery_previous:h}"; then
+    return 1
+  fi
+  if ! /bin/mv "$previous_app" "$recovery_previous"; then
+    return 1
+  fi
+  print -u2 "Previous app preserved for recovery at: $recovery_previous"
 }
 
 rollback() {
@@ -83,8 +102,10 @@ rollback() {
   fi
   if [[ "$launch_succeeded" == true || "$rollback_complete" == true ]]; then
     /bin/rm -rf "$install_tmp"
+  elif preserve_previous_recovery; then
+    /bin/rm -rf "$install_tmp"
   else
-    print -u2 "Rollback incomplete; preserved previous app at: $previous_app"
+    print -u2 "Rollback incomplete; durable recovery failed, preserved previous app at: $previous_app"
   fi
   return "$exit_status"
 }

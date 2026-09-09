@@ -54,8 +54,9 @@ case "$name" in
   open)
     if [[ "\${MOCK_MODE:-}" != launch-failure ]]; then /usr/bin/touch "$MOCK_STATE/launched"; fi ;;
   mv)
-    if [[ "\${MOCK_PRESERVE_MOVE_FAILURE:-0}" == 1 && "$2" == *"/failed/"* ]]; then exit 1; fi
-    if [[ "\${MOCK_RESTORE_MOVE_FAILURE:-0}" == 1 && "$1" == *".previous.bundle" ]]; then exit 1; fi
+    if [[ "\${MOCK_PRESERVE_MOVE_FAILURE:-0}" == 1 && "$2" == *"/failed/"* && "$2" != *"/failed/recovery/"* ]]; then exit 1; fi
+    if [[ "\${MOCK_RESTORE_MOVE_FAILURE:-0}" == 1 && "$1" == *".previous.bundle" && "$2" != *"/failed/recovery/"* ]]; then exit 1; fi
+    if [[ "\${MOCK_RECOVERY_MOVE_FAILURE:-0}" == 1 && "$2" == *"/failed/recovery/"* ]]; then exit 1; fi
     /bin/mv "$@" ;;
   *) /bin/"$name" "$@" ;;
 esac
@@ -139,8 +140,16 @@ function marker(app) {
 }
 
 function preservedPrevious(root) {
-  const installDir = fs.readdirSync(root).find((entry) => entry.startsWith("install."));
+  const installDir = fs
+    .readdirSync(root)
+    .find((entry) => entry.startsWith("install.") && fs.statSync(path.join(root, entry)).isDirectory());
   return installDir && path.join(root, installDir, "OpenWhispr Local.previous.bundle");
+}
+
+function durablePrevious(failedRoot) {
+  const recoveryRoot = path.join(failedRoot, "recovery");
+  const entry = fs.readdirSync(recoveryRoot).find((name) => name.endsWith(".bundle"));
+  return path.join(recoveryRoot, entry);
 }
 
 test("installer leaves the original app in place when shutdown fails before swap", () => {
@@ -203,7 +212,8 @@ test("installer retains the previous bundle when failed-candidate preservation f
   try {
     assert.equal(fixture.result.ok, false);
     assert.equal(marker(fixture.app), "candidate", fixture.result.stderr);
-    assert.equal(marker(preservedPrevious(fixture.root)), "original");
+    assert.equal(marker(durablePrevious(fixture.failed)), "original");
+    assert.equal(preservedPrevious(fixture.root), undefined);
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }
@@ -214,8 +224,24 @@ test("installer retains the previous bundle when restoration move fails", () => 
   try {
     assert.equal(fixture.result.ok, false);
     assert.equal(fs.existsSync(fixture.app), false);
+    assert.equal(marker(durablePrevious(fixture.failed)), "original");
+    assert.equal(preservedPrevious(fixture.root), undefined);
+    assert.equal(fs.readdirSync(fixture.failed).length, 2);
+  } finally {
+    fs.rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("installer retains the temporary previous bundle only when durable recovery also fails", () => {
+  const fixture = runInstall("launch-failure", {
+    MOCK_PRESERVE_MOVE_FAILURE: "1",
+    MOCK_RECOVERY_MOVE_FAILURE: "1",
+  });
+  try {
+    assert.equal(fixture.result.ok, false);
+    assert.equal(marker(fixture.app), "candidate", fixture.result.stderr);
     assert.equal(marker(preservedPrevious(fixture.root)), "original");
-    assert.equal(fs.readdirSync(fixture.failed).length, 1);
+    assert.deepEqual(fs.readdirSync(path.join(fixture.failed, "recovery")), []);
   } finally {
     fs.rmSync(fixture.root, { recursive: true, force: true });
   }
