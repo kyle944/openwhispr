@@ -1209,7 +1209,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       }
 
       try {
-        this._silenceCtx = new AudioContext();
+        this._silenceCtx = new AudioContext({ sinkId: { type: "none" } });
         if (this._silenceCtx.state === "suspended") {
           // Not awaited — resume() can hang when the output device is wedged.
           this._silenceCtx.resume().catch(() => {});
@@ -1289,7 +1289,10 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       this._streamingCommitActive = false;
       if (useLocalWhisper && (showTranscriptionPreview || streamingCommit)) {
         try {
-          this._previewAudioContext = new AudioContext({ sampleRate: 16000 });
+          this._previewAudioContext = new AudioContext({
+            sampleRate: 16000,
+            sinkId: { type: "none" },
+          });
           this._previewSource = this._previewAudioContext.createMediaStreamSource(micStream);
           await this._previewAudioContext.audioWorklet.addModule(this.getWorkletBlobUrl());
 
@@ -3969,7 +3972,10 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       }
       return this.persistentAudioContext;
     }
-    this.persistentAudioContext = new AudioContext({ sampleRate: 16000 });
+    this.persistentAudioContext = new AudioContext({
+      sampleRate: 16000,
+      sinkId: { type: "none" },
+    });
     this.workletModuleLoaded = false;
     return this.persistentAudioContext;
   }
