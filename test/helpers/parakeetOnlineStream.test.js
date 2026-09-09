@@ -8,7 +8,7 @@ const ParakeetWsServer = require("../../src/helpers/parakeetWsServer");
 const { pcm16ToFloat32 } = require("../../src/utils/audioUtils");
 
 // Mock sherpa online WS protocol: float32 binary frames in, JSON results out, "Done"/"Done!" handshake.
-async function startMockOnlineServer({ onBinary, finalSegment = 0 }) {
+async function startMockOnlineServer({ onBinary, finalSegment = 0, onDone } = {}) {
   const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
   await once(wss, "listening");
 
@@ -22,14 +22,18 @@ async function startMockOnlineServer({ onBinary, finalSegment = 0 }) {
         return;
       }
       if (data.toString() === "Done" && !ignoringDone) {
-        socket.send(
-          JSON.stringify({
-            text: `final after ${binaryFrames} frames`,
-            segment: finalSegment,
-            is_final: true,
-          })
-        );
-        socket.send("Done!");
+        if (onDone) {
+          onDone(socket, binaryFrames);
+        } else {
+          socket.send(
+            JSON.stringify({
+              text: `final after ${binaryFrames} frames`,
+              segment: finalSegment,
+              is_final: true,
+            })
+          );
+          socket.send("Done!");
+        }
       }
     });
   });
@@ -39,6 +43,26 @@ async function startMockOnlineServer({ onBinary, finalSegment = 0 }) {
     ignoreDone: () => {
       ignoringDone = true;
     },
+    close: () => new Promise((resolve) => wss.close(resolve)),
+  };
+}
+
+async function startMockOfflineServer(result) {
+  const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+  await once(wss, "listening");
+
+  wss.on("connection", (socket) => {
+    socket.on("message", (data, isBinary) => {
+      if (isBinary) {
+        socket.send(result);
+      } else if (data.toString() === "Done") {
+        socket.close();
+      }
+    });
+  });
+
+  return {
+    port: wss.address().port,
     close: () => new Promise((resolve) => wss.close(resolve)),
   };
 }
@@ -245,7 +269,12 @@ test("finish is idempotent and returns the same result", async () => {
 });
 
 test("wake probe verifies the live protocol and leaves a healthy idle server running", async () => {
-  const mock = await startMockOnlineServer({});
+  const mock = await startMockOnlineServer({
+    onDone: (socket) => {
+      socket.send(JSON.stringify({ text: "", segment: 0, is_final: true }));
+      socket.send("Done!");
+    },
+  });
   try {
     const server = onlineWsServerAt(mock.port);
     server.stop = async () => assert.fail("healthy wake probe must not stop the server");
@@ -258,6 +287,89 @@ test("wake probe verifies the live protocol and leaves a healthy idle server run
     await mock.close();
   }
 });
+
+for (const { name, onDone } of [
+  {
+    name: "Done! without an inference result",
+    onDone: (socket) => socket.send("Done!"),
+  },
+  {
+    name: "a malformed inference result",
+    onDone: (socket) => {
+      socket.send("not-json");
+      socket.send("Done!");
+    },
+  },
+  {
+    name: "an error inference result",
+    onDone: (socket) => {
+      socket.send(JSON.stringify({ error: "decode failed", text: "" }));
+      socket.send("Done!");
+    },
+  },
+]) {
+  test(`wake probe recycles an idle online server after ${name}`, async () => {
+    const mock = await startMockOnlineServer({ onDone });
+    try {
+      const server = onlineWsServerAt(mock.port);
+      let stopCalls = 0;
+      server.stop = async () => {
+        stopCalls += 1;
+        server.ready = false;
+      };
+
+      const result = await server.onWakeFromSleep({ timeoutMs: 500 });
+
+      assert.equal(result.status, "stopped");
+      assert.equal(stopCalls, 1);
+    } finally {
+      await mock.close();
+    }
+  });
+}
+
+test("wake probe accepts a valid empty offline inference result", async () => {
+  const mock = await startMockOfflineServer(JSON.stringify({ text: "" }));
+  try {
+    const server = onlineWsServerAt(mock.port);
+    server.modelRuntime = "offline";
+    server.stop = async () => assert.fail("valid empty result must not stop the server");
+
+    const result = await server.onWakeFromSleep({ timeoutMs: 500 });
+
+    assert.equal(result.status, "healthy");
+  } finally {
+    await mock.close();
+  }
+});
+
+for (const { name, resultMessage } of [
+  { name: "malformed JSON", resultMessage: "not-json" },
+  {
+    name: "an error result",
+    resultMessage: JSON.stringify({ error: "decode failed", text: "" }),
+  },
+]) {
+  test(`wake probe recycles an idle offline server after ${name}`, async () => {
+    const mock = await startMockOfflineServer(resultMessage);
+    try {
+      const server = onlineWsServerAt(mock.port);
+      server.modelRuntime = "offline";
+      let stopCalls = 0;
+      server.stop = async () => {
+        stopCalls += 1;
+        server.ready = false;
+      };
+
+      const result = await server.onWakeFromSleep({ timeoutMs: 500 });
+
+      assert.equal(result.status, "stopped");
+      assert.equal(stopCalls, 1);
+    } finally {
+      await mock.close();
+    }
+  });
+}
 
 test("wake probe recycles an idle server that cannot complete the protocol", async () => {
   const mock = await startMockOnlineServer({});

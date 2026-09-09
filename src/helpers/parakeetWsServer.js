@@ -276,16 +276,16 @@ class ParakeetWsServer {
     };
   }
 
-  _runTranscription(samplesBuffer, sampleRate, signal) {
+  _runTranscription(samplesBuffer, sampleRate, signal, { validateProtocol = false } = {}) {
     if (!this.ready || !this.process) {
       throw new Error("parakeet-ws server is not running");
     }
 
     if (this.modelRuntime === "online") {
-      return this._transcribeOnline(samplesBuffer, signal);
+      return this._transcribeOnline(samplesBuffer, signal, validateProtocol);
     }
 
-    return this._transcribeOffline(samplesBuffer, sampleRate, signal);
+    return this._transcribeOffline(samplesBuffer, sampleRate, signal, validateProtocol);
   }
 
   // signal is optional; dictation and warm-up flows never pass one.
@@ -301,7 +301,7 @@ class ParakeetWsServer {
     }
   }
 
-  _transcribeOffline(samplesBuffer, sampleRate, signal) {
+  _transcribeOffline(samplesBuffer, sampleRate, signal, validateProtocol = false) {
     const timeoutMs = computeTranscriptionTimeoutMs(
       samplesBuffer.length / FLOAT32_BYTES_PER_SAMPLE / sampleRate
     );
@@ -379,6 +379,25 @@ class ParakeetWsServer {
           resultPreview: result.slice(0, 200),
         });
 
+        if (validateProtocol) {
+          let parsed;
+          try {
+            parsed = JSON.parse(result);
+          } catch {
+            reject(new Error("parakeet-ws wake probe returned malformed JSON"));
+            return;
+          }
+          if (
+            !parsed ||
+            typeof parsed !== "object" ||
+            Object.hasOwn(parsed, "error") ||
+            typeof parsed.text !== "string"
+          ) {
+            reject(new Error("parakeet-ws wake probe returned an invalid result"));
+            return;
+          }
+        }
+
         resolve({ text: parseOfflineMessage(result), elapsed });
       });
 
@@ -391,20 +410,24 @@ class ParakeetWsServer {
   }
 
   // samplesBuffer must already be 16kHz float32.
-  async _transcribeOnline(samplesBuffer, signal) {
+  async _transcribeOnline(samplesBuffer, signal, validateProtocol = false) {
     if (signal?.aborted) throw createAbortError("parakeet-ws transcription cancelled");
 
     const startTime = Date.now();
     let streamError = null;
     let timedOut = false;
 
+    const protocolStatus = validateProtocol
+      ? { completionDone: false, finalResultSeen: false, invalidResultSeen: false }
+      : null;
     const stream = this._createOnlineStream(
       {
         onError: (error) => {
           streamError = error;
         },
       },
-      false
+      false,
+      protocolStatus
     );
 
     debugLogger.debug("parakeet-ws sending streaming audio", {
@@ -434,6 +457,14 @@ class ParakeetWsServer {
       if (streamError) {
         throw new Error(`parakeet-ws transcription failed: ${streamError.message}`);
       }
+      if (
+        protocolStatus &&
+        (!protocolStatus.completionDone ||
+          !protocolStatus.finalResultSeen ||
+          protocolStatus.invalidResultSeen)
+      ) {
+        throw new Error("parakeet-ws wake probe returned an invalid protocol response");
+      }
 
       const elapsed = Date.now() - startTime;
       debugLogger.debug("parakeet-ws streaming transcription completed", {
@@ -453,7 +484,7 @@ class ParakeetWsServer {
     return this._createOnlineStream({ onUpdate, onError }, true);
   }
 
-  _createOnlineStream({ onUpdate, onError } = {}, trackActivity = true) {
+  _createOnlineStream({ onUpdate, onError } = {}, trackActivity = true, protocolStatus = null) {
     if (!this.ready || !this.process) {
       throw new Error("parakeet-ws server is not running");
     }
@@ -551,8 +582,26 @@ class ParakeetWsServer {
       if (finishResolve) armIdleTimer();
       if (message === "Done!") {
         serverDone = true;
+        if (protocolStatus) protocolStatus.completionDone = true;
         ws.close();
         return;
+      }
+      if (protocolStatus) {
+        try {
+          const parsed = JSON.parse(message);
+          if (
+            !parsed ||
+            typeof parsed !== "object" ||
+            Object.hasOwn(parsed, "error") ||
+            typeof parsed.text !== "string"
+          ) {
+            protocolStatus.invalidResultSeen = true;
+          } else if (parsed.is_final === true || parsed.is_eof === true) {
+            protocolStatus.finalResultSeen = true;
+          }
+        } catch {
+          protocolStatus.invalidResultSeen = true;
+        }
       }
       const text = results.push(message);
       if (!closed && text && text !== lastEmitted) {
@@ -611,7 +660,9 @@ class ParakeetWsServer {
     try {
       const sampleRate = 16000;
       const silentSamples = Buffer.alloc(sampleRate * FLOAT32_BYTES_PER_SAMPLE);
-      const result = await this._runTranscription(silentSamples, sampleRate, controller.signal);
+      const result = await this._runTranscription(silentSamples, sampleRate, controller.signal, {
+        validateProtocol: true,
+      });
       if (!result || typeof result.text !== "string" || result.truncated) {
         throw new Error("parakeet-ws wake probe returned an incomplete response");
       }
