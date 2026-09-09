@@ -1,0 +1,34 @@
+name: Local STT repair verification
+on:
+  push:
+    branches: [codex/stt-reliability-20260908]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Focused audio lifecycle regression tests
+        shell: bash
+        run: |
+          tests=(test/helpers/audioManager*.test.js test/helpers/preparedMicCapture.test.js)
+          ELECTRON_OVERRIDE_DIST_PATH=/tmp node --test "${tests[@]}"
+      - run: npm run typecheck
+      - run: npm run build:renderer
+      - name: Record renderer source and hashes
+        run: |
+          printf '%s\n' "$GITHUB_SHA" > src/dist/SOURCE_SHA
+          (cd src/dist && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stt-renderer-${{ github.sha }}
+          path: src/dist/
+          retention-days: 7
+          if-no-files-found: error
