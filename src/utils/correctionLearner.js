@@ -79,6 +79,79 @@ function findEditedRegion(originalText, fieldValue) {
   return fieldWords.slice(bestStart, bestStart + windowSize).join(" ");
 }
 
+/**
+ * Isolate the span pasted by OpenWhispr using the field value captured after
+ * paste. Learning fails closed when the paste cannot be located uniquely or
+ * when text outside its surrounding anchors changed.
+ */
+function findTrackedEditedRegion(originalText, initialFieldValue, fieldValue) {
+  if (typeof initialFieldValue !== "string") return null;
+
+  const start = initialFieldValue.indexOf(originalText);
+  if (start === -1 || initialFieldValue.indexOf(originalText, start + 1) !== -1) return null;
+
+  const prefix = initialFieldValue.slice(0, start);
+  const suffix = initialFieldValue.slice(start + originalText.length);
+  if (!fieldValue.startsWith(prefix) || (suffix && !fieldValue.endsWith(suffix))) return null;
+
+  const end = suffix ? fieldValue.length - suffix.length : fieldValue.length;
+  if (end < prefix.length) return null;
+  const editedRegion = fieldValue.slice(prefix.length, end);
+
+  const originalWords = tokenize(originalText).map((word) => word.toLowerCase());
+  const editedWords = tokenize(editedRegion).map((word) => word.toLowerCase());
+  if (hasBoundaryWordInsertion(originalWords, editedWords)) return null;
+
+  return editedRegion;
+}
+
+/**
+ * Reject lexical insertions before or after the tracked transcript while
+ * preserving edits inside it, including one-word splits. Token-level
+ * Levenshtein alignment treats a changed boundary word as a substitution, so
+ * repeated words do not turn an ordinary correction into a false append.
+ */
+function hasBoundaryWordInsertion(originalWords, editedWords) {
+  const m = originalWords.length;
+  const n = editedWords.length;
+  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const substitutionCost = originalWords[i - 1] === editedWords[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + substitutionCost);
+    }
+  }
+
+  let i = m;
+  let j = n;
+  while (i > 0 || j > 0) {
+    if (
+      i > 0 &&
+      j > 0 &&
+      dp[i][j] === dp[i - 1][j - 1] + (originalWords[i - 1] === editedWords[j - 1] ? 0 : 1)
+    ) {
+      i -= 1;
+      j -= 1;
+    } else if (i > 0 && dp[i][j] === dp[i - 1][j] + 1) {
+      i -= 1;
+    } else {
+      if (i === 0 || i === m) return true;
+      j -= 1;
+    }
+  }
+
+  return false;
+}
+
+function resolveEditedRegion(originalText, fieldValue, initialFieldValue) {
+  return typeof initialFieldValue === "string"
+    ? findTrackedEditedRegion(originalText, initialFieldValue, fieldValue)
+    : findEditedRegion(originalText, fieldValue);
+}
+
 /** Word-level LCS to find [originalWord, editedWord] substitution pairs. */
 function findSubstitutions(origWords, editedWords) {
   const m = origWords.length;
@@ -144,6 +217,14 @@ function sharedWordRatio(originalText, editedText) {
   return shared / Math.max(original.length, edited.length);
 }
 
+function sharedCharacterRatio(originalText, editedText) {
+  const original = originalText.toLocaleLowerCase().replace(/\s+/g, " ");
+  const edited = editedText.toLocaleLowerCase().replace(/\s+/g, " ");
+  const maxLength = Math.max(original.length, edited.length);
+  if (maxLength === 0) return 0;
+  return 1 - editDistance(original, edited) / maxLength;
+}
+
 function cropCorrectionPair(originalText, editedText, maxLength = 240) {
   if (originalText.length <= maxLength && editedText.length <= maxLength) {
     return { before: originalText, after: editedText };
@@ -184,13 +265,17 @@ function cropCorrectionPair(originalText, editedText, maxLength = 240) {
  * from later. The example keeps wording, punctuation, casing and layout, while
  * rejecting wholesale rewrites and trivial whitespace-only changes.
  */
-function extractCorrectionExample(originalText, fieldValue) {
+function extractCorrectionExample(originalText, fieldValue, initialFieldValue) {
   if (typeof originalText !== "string" || typeof fieldValue !== "string") return null;
   const original = originalText.trim();
-  const edited = findEditedRegion(originalText, fieldValue).trim();
+  const editedRegion = resolveEditedRegion(originalText, fieldValue, initialFieldValue);
+  if (editedRegion === null) return null;
+  const edited = editedRegion.trim();
   if (!original || !edited || original === edited) return null;
   if (original.replace(/\s+/g, " ") === edited.replace(/\s+/g, " ")) return null;
-  if (sharedWordRatio(original, edited) < 0.55) return null;
+  if (sharedWordRatio(original, edited) < 0.55 && sharedCharacterRatio(original, edited) < 0.7) {
+    return null;
+  }
 
   const pair = cropCorrectionPair(original, edited);
   if (!pair.before || !pair.after || pair.before === pair.after) return null;
@@ -205,11 +290,12 @@ function extractCorrectionExample(originalText, fieldValue) {
  * @param {string[]} existingDictionary - Words already in the custom dictionary
  * @returns {string[]} Array of corrected words to add to the dictionary
  */
-function extractCorrections(originalText, fieldValue, existingDictionary) {
+function extractCorrections(originalText, fieldValue, existingDictionary, initialFieldValue) {
   if (!originalText || !fieldValue) return [];
   if (originalText === fieldValue) return [];
 
-  const editedRegion = findEditedRegion(originalText, fieldValue);
+  const editedRegion = resolveEditedRegion(originalText, fieldValue, initialFieldValue);
+  if (editedRegion === null) return [];
   if (editedRegion === originalText) return [];
 
   const origWords = tokenize(originalText);

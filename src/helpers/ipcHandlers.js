@@ -1019,20 +1019,21 @@ class IPCHandlers {
       if (
         !data ||
         typeof data.originalText !== "string" ||
+        typeof data.initialFieldValue !== "string" ||
         typeof data.newFieldValue !== "string"
       ) {
         debugLogger.debug("[AutoLearn] Invalid event payload, skipping");
         return;
       }
 
-      const { originalText, newFieldValue } = data;
+      const { originalText, initialFieldValue, newFieldValue } = data;
 
       debugLogger.debug("[AutoLearn] text-edited event", {
         originalPreview: originalText.substring(0, 80),
         newValuePreview: newFieldValue.substring(0, 80),
       });
 
-      this._autoLearnLatestData = { originalText, newFieldValue };
+      this._autoLearnLatestData = { originalText, initialFieldValue, newFieldValue };
 
       if (this._autoLearnDebounceTimer) {
         clearTimeout(this._autoLearnDebounceTimer);
@@ -1055,7 +1056,7 @@ class IPCHandlers {
       return;
     }
 
-    const { originalText, newFieldValue } = this._autoLearnLatestData;
+    const { originalText, initialFieldValue, newFieldValue } = this._autoLearnLatestData;
     this._autoLearnLatestData = null;
 
     try {
@@ -1064,8 +1065,17 @@ class IPCHandlers {
         extractCorrections,
       } = require("../utils/correctionLearner");
       const currentDict = this._getDictionarySafe();
-      const corrections = extractCorrections(originalText, newFieldValue, currentDict);
-      const correctionExample = extractCorrectionExample(originalText, newFieldValue);
+      const corrections = extractCorrections(
+        originalText,
+        newFieldValue,
+        currentDict,
+        initialFieldValue
+      );
+      const correctionExample = extractCorrectionExample(
+        originalText,
+        newFieldValue,
+        initialFieldValue
+      );
       debugLogger.debug("[AutoLearn] Corrections result", {
         corrections,
         dictSize: currentDict.length,

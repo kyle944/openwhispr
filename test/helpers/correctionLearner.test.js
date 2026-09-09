@@ -77,3 +77,56 @@ test("whitespace-only edits and wholesale rewrites do not become preferences", (
     null
   );
 });
+
+test("a word edit is learned only from the tracked pasted span", () => {
+  const original = "Please ask Shunade about the launch tomorrow.";
+  const initial = `Existing draft. ${original} `;
+  const edited = "Existing draft. Please ask Sinead about the launch tomorrow. ";
+
+  assert.deepEqual(extractCorrections(original, edited, [], initial), ["Sinead"]);
+  assert.deepEqual(extractCorrectionExample(original, edited, initial), {
+    before: original,
+    after: "Please ask Sinead about the launch tomorrow.",
+  });
+});
+
+test("typing adjacent prose after a paste is not learned", () => {
+  const original = "Please review the launch timing and list the major improvements you can find.";
+  const initial = `Existing draft. ${original} `;
+  const appended = `${initial}Also inspect the unrelated follow-up`;
+
+  assert.deepEqual(extractCorrections(original, appended, [], initial), []);
+  assert.equal(extractCorrectionExample(original, appended, initial), null);
+});
+
+test("a word edit mixed with appended prose fails closed", () => {
+  const original = "Please ask Open whisper about the launch tomorrow.";
+  const initial = `${original} `;
+  const editedAndAppended = "Please ask OpenWhispr about the launch tomorrow. Add a new task";
+
+  assert.deepEqual(extractCorrections(original, editedAndAppended, [], initial), []);
+  assert.equal(extractCorrectionExample(original, editedAndAppended, initial), null);
+});
+
+test("an internal word split remains a learnable correction example", () => {
+  const original = "Meet Newyork tomorrow.";
+  const initial = `${original} `;
+  const edited = "Meet New York tomorrow. ";
+
+  assert.deepEqual(extractCorrectionExample(original, edited, initial), {
+    before: original,
+    after: "Meet New York tomorrow.",
+  });
+});
+
+test("a repeated final word can be corrected without looking like an append", () => {
+  const original = "Call John and thank John.";
+  const initial = `${original} `;
+  const edited = "Call John and thank Jon. ";
+
+  assert.deepEqual(extractCorrections(original, edited, [], initial), ["Jon"]);
+  assert.deepEqual(extractCorrectionExample(original, edited, initial), {
+    before: original,
+    after: "Call John and thank Jon.",
+  });
+});

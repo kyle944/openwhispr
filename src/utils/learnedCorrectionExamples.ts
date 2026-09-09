@@ -13,6 +13,13 @@ function normalizeExample(value: unknown): LearnedCorrectionExample | null {
   const before = typeof candidate.before === "string" ? candidate.before.trim() : "";
   const after = typeof candidate.after === "string" ? candidate.after.trim() : "";
   if (!before || !after || before === after) return null;
+  const unchangedAt = after.toLocaleLowerCase().indexOf(before.toLocaleLowerCase());
+  if (unchangedAt !== -1) {
+    const surrounding = `${after.slice(0, unchangedAt)}${after.slice(unchangedAt + before.length)}`;
+    // Discard old examples where the transcript itself was unchanged and the
+    // user merely typed adjacent prose. Keep punctuation-only wrapping edits.
+    if (/[\p{L}\p{N}_]/u.test(surrounding)) return null;
+  }
   return { before: before.slice(0, 240), after: after.slice(0, 240) };
 }
 

@@ -35,6 +35,38 @@ test("getSelectedText returns unavailable for an inaccessible target", async () 
 
 const darwinOnly = { skip: process.platform !== "darwin" };
 
+test("monitor includes the post-paste baseline with the debounced edit payload", () => {
+  const m = new TextEditMonitor();
+  m.currentOriginalText = "Please ask Shunade tomorrow.";
+  const events = [];
+  m.on("text-edited", (event) => events.push(event));
+
+  m._handleProcessStdoutChunk(
+    "INITIAL_VALUE:Existing. Please ask Shunade tomorrow. \n" +
+      "CHANGED:Existing. Please ask Sinead tomorrow. \n"
+  );
+
+  assert.deepEqual(events, [
+    {
+      originalText: "Please ask Shunade tomorrow.",
+      initialFieldValue: "Existing. Please ask Shunade tomorrow. ",
+      newFieldValue: "Existing. Please ask Sinead tomorrow. ",
+    },
+  ]);
+});
+
+test("monitor fails closed when a changed line arrives before the baseline", () => {
+  const m = new TextEditMonitor();
+  m.currentOriginalText = "Please ask Shunade tomorrow.";
+  let emitted = false;
+  m.on("text-edited", () => {
+    emitted = true;
+  });
+
+  m._handleProcessLine("CHANGED:Please ask Sinead tomorrow.");
+  assert.equal(emitted, false);
+});
+
 test("startMonitoring stops immediately without a target PID", darwinOnly, () => {
   const m = new TextEditMonitor();
   m.startMonitoring("pasted text", 5000, { targetPid: null });

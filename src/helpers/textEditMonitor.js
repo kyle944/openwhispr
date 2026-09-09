@@ -85,6 +85,7 @@ class TextEditMonitor extends EventEmitter {
     super();
     this.process = null;
     this.currentOriginalText = null;
+    this._initialFieldValue = null;
     this.timeout = null;
     this._pollInterval = null;
     this._lastValue = null;
@@ -487,6 +488,7 @@ class TextEditMonitor extends EventEmitter {
       this._pollInterval = null;
     }
     this._lastValue = null;
+    this._initialFieldValue = null;
     this._stdoutBuffer = "";
     if (this.process) {
       try {
@@ -522,7 +524,11 @@ class TextEditMonitor extends EventEmitter {
   }
 
   _emitTextEdited(newFieldValue) {
-    if (typeof newFieldValue !== "string" || this.currentOriginalText === null) {
+    if (
+      typeof newFieldValue !== "string" ||
+      this.currentOriginalText === null ||
+      this._initialFieldValue === null
+    ) {
       return;
     }
 
@@ -531,11 +537,23 @@ class TextEditMonitor extends EventEmitter {
     });
     this.emit("text-edited", {
       originalText: this.currentOriginalText,
+      initialFieldValue: this._initialFieldValue,
       newFieldValue,
     });
   }
 
   _handleProcessLine(line) {
+    if (line.startsWith("INITIAL_VALUE_B64:")) {
+      const decoded = this._decodeBase64Payload(line.slice("INITIAL_VALUE_B64:".length));
+      if (decoded !== null) this._initialFieldValue = decoded;
+      return;
+    }
+
+    if (line.startsWith("INITIAL_VALUE:")) {
+      this._initialFieldValue = line.slice("INITIAL_VALUE:".length);
+      return;
+    }
+
     if (line.startsWith("CHANGED_B64:")) {
       const decoded = this._decodeBase64Payload(line.slice("CHANGED_B64:".length));
       if (decoded !== null) {
@@ -728,6 +746,7 @@ class TextEditMonitor extends EventEmitter {
     }
 
     this._lastValue = initialValue;
+    this._initialFieldValue = initialValue;
     debugLogger.debug("[TextEditMonitor] macOS: initial value", {
       valuePreview: initialValue.substring(0, 80),
       attempt,
@@ -751,6 +770,7 @@ class TextEditMonitor extends EventEmitter {
         });
         this.emit("text-edited", {
           originalText: this.currentOriginalText,
+          initialFieldValue: this._initialFieldValue,
           newFieldValue: currentValue,
         });
       }
