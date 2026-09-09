@@ -276,6 +276,10 @@ class ParakeetWsServer {
     };
   }
 
+  reserveUserActivity() {
+    return this._beginActivity();
+  }
+
   _runTranscription(samplesBuffer, sampleRate, signal, { validateProtocol = false } = {}) {
     if (!this.ready || !this.process) {
       throw new Error("parakeet-ws server is not running");

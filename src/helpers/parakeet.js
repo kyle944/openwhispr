@@ -208,11 +208,18 @@ class ParakeetManager {
   async createOnlineStream(modelName, options = {}) {
     this.validateModelName(modelName);
     assertParakeetSupported();
-    const started = await this.serverManager.startServer(modelName);
-    if (!started.success) {
-      throw new Error(started.reason || "Failed to start parakeet streaming server");
+    // Hold admission across the awaited start. The stream acquires its own
+    // activity slot synchronously before this reservation is released.
+    const releaseActivity = this.serverManager.reserveUserActivity();
+    try {
+      const started = await this.serverManager.startServer(modelName);
+      if (!started.success) {
+        throw new Error(started.reason || "Failed to start parakeet streaming server");
+      }
+      return this.serverManager.createOnlineStream(options);
+    } finally {
+      releaseActivity();
     }
-    return this.serverManager.createOnlineStream(options);
   }
 
   async transcribeLocalParakeet(audioBlob, options = {}) {

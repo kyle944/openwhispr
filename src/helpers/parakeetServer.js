@@ -110,8 +110,15 @@ class ParakeetServerManager {
     // An already-cancelled upload skips the ffmpeg conversion entirely.
     throwIfAborted();
 
-    const { wavBuffer, filesToCleanup } = await this._ensureWav(audioBuffer);
+    // Reserve the server before the first await. Otherwise a wake probe can
+    // fail while normalization/startup yields and recycle the process that
+    // this request is about to use.
+    const releaseActivity = this.reserveUserActivity();
+    let filesToCleanup = [];
     try {
+      const normalized = await this._ensureWav(audioBuffer);
+      const { wavBuffer } = normalized;
+      filesToCleanup = normalized.filesToCleanup;
       throwIfAborted();
       const runtime = getModelRuntime(modelName);
       // Awaiting unconditionally also covers a startup's warm-up completion.
@@ -188,6 +195,7 @@ class ParakeetServerManager {
         : { text, elapsed: totalElapsed };
     } finally {
       this._cleanupFiles(filesToCleanup);
+      releaseActivity();
     }
   }
 
@@ -236,6 +244,10 @@ class ParakeetServerManager {
 
   onWakeFromSleep(options) {
     return this.wsServer.onWakeFromSleep(options);
+  }
+
+  reserveUserActivity() {
+    return this.wsServer.reserveUserActivity?.() || (() => {});
   }
 
   createOnlineStream(options) {

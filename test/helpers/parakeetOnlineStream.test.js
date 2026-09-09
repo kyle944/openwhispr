@@ -4,6 +4,8 @@ const { once } = require("node:events");
 
 const { WebSocketServer } = require("ws");
 
+const ParakeetManager = require("../../src/helpers/parakeet");
+const ParakeetServerManager = require("../../src/helpers/parakeetServer");
 const ParakeetWsServer = require("../../src/helpers/parakeetWsServer");
 const { pcm16ToFloat32 } = require("../../src/utils/audioUtils");
 
@@ -76,6 +78,29 @@ function onlineWsServerAt(port) {
   server.modelDir = "/tmp/mock-parakeet-model";
   server.modelRuntime = "online";
   return server;
+}
+
+function audibleWav() {
+  const sampleRate = 16000;
+  const dataSize = sampleRate * 2;
+  const wav = Buffer.alloc(44 + dataSize);
+  wav.write("RIFF", 0);
+  wav.writeUInt32LE(36 + dataSize, 4);
+  wav.write("WAVE", 8);
+  wav.write("fmt ", 12);
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(sampleRate, 24);
+  wav.writeUInt32LE(sampleRate * 2, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36);
+  wav.writeUInt32LE(dataSize, 40);
+  for (let offset = 44; offset < wav.length; offset += 2) {
+    wav.writeInt16LE(offset % 4 === 0 ? 8000 : -8000, offset);
+  }
+  return wav;
 }
 
 test("online stream emits live updates and finish resolves with the final text", async () => {
@@ -479,6 +504,78 @@ test("wake recovery does not stop a replacement process after the probe fails", 
   const result = await recovery;
   assert.equal(result.status, "busy");
   assert.equal(stopCalls, 0);
+});
+
+test("manager streaming admission spans awaited startup and hands off to the live stream", async () => {
+  const mock = await startMockOnlineServer({});
+  try {
+    const manager = new ParakeetManager();
+    const server = onlineWsServerAt(mock.port);
+    manager.serverManager.wsServer = server;
+    manager.serverManager.isModelDownloaded = () => true;
+    server.isAvailable = () => true;
+
+    let rejectProbe;
+    server._probeFunctionalHealth = () =>
+      new Promise((_, reject) => {
+        rejectProbe = reject;
+      });
+    let stopCalls = 0;
+    server.stop = async () => {
+      stopCalls += 1;
+      server.ready = false;
+    };
+
+    const recovery = manager.onWakeFromSleep({ timeoutMs: 500 });
+    const userStream = manager.createOnlineStream(server.modelName);
+    rejectProbe(new Error("stalled"));
+
+    const recoveryResult = await recovery;
+    const stream = await userStream;
+
+    assert.equal(recoveryResult.status, "busy");
+    assert.equal(stopCalls, 0);
+    assert.equal(server.activeRequestCount, 1, "the live stream owns admission after startup");
+    stream.abort();
+    assert.equal(server.activeRequestCount, 0);
+  } finally {
+    await mock.close();
+  }
+});
+
+test("batch admission spans normalization, startup, and transcription", async () => {
+  const mock = await startMockOnlineServer({});
+  try {
+    const manager = new ParakeetServerManager();
+    const server = onlineWsServerAt(mock.port);
+    manager.wsServer = server;
+    manager.isModelDownloaded = () => true;
+
+    let rejectProbe;
+    server._probeFunctionalHealth = () =>
+      new Promise((_, reject) => {
+        rejectProbe = reject;
+      });
+    let stopCalls = 0;
+    server.stop = async () => {
+      stopCalls += 1;
+      server.ready = false;
+    };
+
+    const recovery = manager.onWakeFromSleep({ timeoutMs: 500 });
+    const transcription = manager.transcribe(audibleWav(), { modelName: server.modelName });
+    rejectProbe(new Error("stalled"));
+
+    const recoveryResult = await recovery;
+    const result = await transcription;
+
+    assert.equal(recoveryResult.status, "busy");
+    assert.equal(stopCalls, 0);
+    assert.equal(result.text, "final after 2 frames");
+    assert.equal(server.activeRequestCount, 0, "batch reservation releases after decode");
+  } finally {
+    await mock.close();
+  }
 });
 
 test("offline transcription rejects with AbortError when cancelled mid-flight", async () => {
