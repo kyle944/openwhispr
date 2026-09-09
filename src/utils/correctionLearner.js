@@ -32,6 +32,35 @@ function tokenize(text) {
     .filter((w) => w.length > 0);
 }
 
+const MAX_ALIGNMENT_CELLS = 250_000;
+
+function trimUnchangedWordEdges(originalWords, editedWords) {
+  let prefix = 0;
+  while (
+    prefix < originalWords.length &&
+    prefix < editedWords.length &&
+    originalWords[prefix].toLowerCase() === editedWords[prefix].toLowerCase()
+  ) {
+    prefix += 1;
+  }
+
+  let suffix = 0;
+  while (
+    suffix < originalWords.length - prefix &&
+    suffix < editedWords.length - prefix &&
+    originalWords[originalWords.length - 1 - suffix].toLowerCase() ===
+      editedWords[editedWords.length - 1 - suffix].toLowerCase()
+  ) {
+    suffix += 1;
+  }
+
+  return {
+    prefix,
+    original: originalWords.slice(prefix, originalWords.length - suffix),
+    edited: editedWords.slice(prefix, editedWords.length - suffix),
+  };
+}
+
 /**
  * Find the region in fieldValue that corresponds to the pasted originalText.
  * If the field only contains the pasted text, returns fieldValue as-is.
@@ -98,8 +127,15 @@ function findTrackedEditedRegion(originalText, initialFieldValue, fieldValue) {
   if (end < prefix.length) return null;
   const editedRegion = fieldValue.slice(prefix.length, end);
 
-  const originalWords = tokenize(originalText).map((word) => word.toLowerCase());
-  const editedWords = tokenize(editedRegion).map((word) => word.toLowerCase());
+  // A reusable example is capped at 240 characters downstream. Very large
+  // growth cannot be a local correction and must not reach quadratic token
+  // alignment on Electron's main thread.
+  if (editedRegion.length > Math.max(originalText.length * 2, originalText.length + 1024)) {
+    return null;
+  }
+
+  const originalWords = tokenize(originalText);
+  const editedWords = tokenize(editedRegion);
   if (hasBoundaryWordInsertion(originalWords, editedWords)) return null;
 
   return editedRegion;
@@ -112,15 +148,25 @@ function findTrackedEditedRegion(originalText, initialFieldValue, fieldValue) {
  * repeated words do not turn an ordinary correction into a false append.
  */
 function hasBoundaryWordInsertion(originalWords, editedWords) {
-  const m = originalWords.length;
-  const n = editedWords.length;
+  const totalOriginalWords = originalWords.length;
+  const trimmed = trimUnchangedWordEdges(originalWords, editedWords);
+  const { original, edited, prefix } = trimmed;
+  const m = original.length;
+  const n = edited.length;
+  if (m === 0) {
+    return n > 0 && (prefix === 0 || prefix === totalOriginalWords);
+  }
+  if (n === 0) return false;
+  if (m * n > MAX_ALIGNMENT_CELLS) return true;
+
   const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
   for (let i = 0; i <= m; i++) dp[i][0] = i;
   for (let j = 0; j <= n; j++) dp[0][j] = j;
 
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      const substitutionCost = originalWords[i - 1] === editedWords[j - 1] ? 0 : 1;
+      const substitutionCost =
+        original[i - 1].toLowerCase() === edited[j - 1].toLowerCase() ? 0 : 1;
       dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + substitutionCost);
     }
   }
@@ -131,14 +177,16 @@ function hasBoundaryWordInsertion(originalWords, editedWords) {
     if (
       i > 0 &&
       j > 0 &&
-      dp[i][j] === dp[i - 1][j - 1] + (originalWords[i - 1] === editedWords[j - 1] ? 0 : 1)
+      dp[i][j] ===
+        dp[i - 1][j - 1] + (original[i - 1].toLowerCase() === edited[j - 1].toLowerCase() ? 0 : 1)
     ) {
       i -= 1;
       j -= 1;
     } else if (i > 0 && dp[i][j] === dp[i - 1][j] + 1) {
       i -= 1;
     } else {
-      if (i === 0 || i === m) return true;
+      const insertionAt = prefix + i;
+      if (insertionAt === 0 || insertionAt === totalOriginalWords) return true;
       j -= 1;
     }
   }
@@ -154,13 +202,17 @@ function resolveEditedRegion(originalText, fieldValue, initialFieldValue) {
 
 /** Word-level LCS to find [originalWord, editedWord] substitution pairs. */
 function findSubstitutions(origWords, editedWords) {
-  const m = origWords.length;
-  const n = editedWords.length;
+  const trimmed = trimUnchangedWordEdges(origWords, editedWords);
+  const original = trimmed.original;
+  const edited = trimmed.edited;
+  const m = original.length;
+  const n = edited.length;
+  if (m === 0 || n === 0 || m * n > MAX_ALIGNMENT_CELLS) return [];
 
   const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      if (origWords[i - 1].toLowerCase() === editedWords[j - 1].toLowerCase()) {
+      if (original[i - 1].toLowerCase() === edited[j - 1].toLowerCase()) {
         dp[i][j] = dp[i - 1][j - 1] + 1;
       } else {
         dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
@@ -172,15 +224,15 @@ function findSubstitutions(origWords, editedWords) {
   let i = m,
     j = n;
   while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && origWords[i - 1].toLowerCase() === editedWords[j - 1].toLowerCase()) {
-      aligned.unshift([origWords[i - 1], editedWords[j - 1]]);
+    if (i > 0 && j > 0 && original[i - 1].toLowerCase() === edited[j - 1].toLowerCase()) {
+      aligned.unshift([original[i - 1], edited[j - 1]]);
       i--;
       j--;
     } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-      aligned.unshift([null, editedWords[j - 1]]);
+      aligned.unshift([null, edited[j - 1]]);
       j--;
     } else {
-      aligned.unshift([origWords[i - 1], null]);
+      aligned.unshift([original[i - 1], null]);
       i--;
     }
   }

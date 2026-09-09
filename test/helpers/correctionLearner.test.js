@@ -130,3 +130,24 @@ test("a repeated final word can be corrected without looking like an append", ()
     after: "Call John and thank Jon.",
   });
 });
+
+test("a long unchanged transcript aligns only its one-word edit", () => {
+  const prefix = Array.from({ length: 2000 }, (_, index) => `token${index}`).join(" ");
+  const original = `${prefix} Shunade closes the message.`;
+  const initial = `${original} `;
+  const edited = `${prefix} Sinead closes the message. `;
+
+  assert.deepEqual(extractCorrections(original, edited, [], initial), ["Sinead"]);
+  const example = extractCorrectionExample(original, edited, initial);
+  assert.ok(example);
+  assert.match(example.after, /Sinead/);
+});
+
+test("a huge append is rejected before token alignment", () => {
+  const original = Array.from({ length: 100 }, (_, index) => `token${index}`).join(" ");
+  const initial = `${original} `;
+  const hugeAppend = `${initial}${"unrelated ".repeat(100_000)}`;
+
+  assert.deepEqual(extractCorrections(original, hugeAppend, [], initial), []);
+  assert.equal(extractCorrectionExample(original, hugeAppend, initial), null);
+});
