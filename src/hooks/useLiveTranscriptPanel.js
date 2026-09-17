@@ -11,6 +11,19 @@ const LIVE_TRANSCRIPT_RENDER_INTERVAL_MS = 32;
 const LIVE_TRANSCRIPT_SHELL_GROW_MS = 60;
 const LIVE_TRANSCRIPT_CLOSE_UNMOUNT_MS = 320;
 const LIVE_TRANSCRIPT_FINAL_HIDE_MS = 4000;
+const LIVE_TRANSCRIPT_WORD_REVEAL_MS = 55;
+const LIVE_TRANSCRIPT_WORD_REVEAL_BACKLOG = 8;
+
+/**
+ * Index just past the next whitespace-delimited word, so reveal steps land on
+ * word boundaries rather than mid-token.
+ */
+function nextWordBoundary(target, from) {
+  let i = from;
+  while (i < target.length && /\s/.test(target[i])) i += 1;
+  while (i < target.length && !/\s/.test(target[i])) i += 1;
+  return i;
+}
 
 /**
  * Owns the live transcript panel: its open/close/entrance choreography, the
@@ -49,6 +62,9 @@ export function useLiveTranscriptPanel({
   const entranceTimersRef = useRef([]);
   const sourceTextRef = useRef("");
   const contentReadyRef = useRef(false);
+  const visibleTextRef = useRef("");
+  const revealTimerRef = useRef(null);
+  const revealTargetRef = useRef("");
   const textSchedulerRef = useRef(null);
   const resizePromiseRef = useRef(Promise.resolve({ success: true }));
   const measurementResizeRef = useRef({
@@ -84,6 +100,54 @@ export function useLiveTranscriptPanel({
     [resizeToContent]
   );
 
+  const setVisibleText = useCallback((value) => {
+    visibleTextRef.current = value;
+    setText(value);
+  }, []);
+
+  const stopReveal = useCallback(() => {
+    if (revealTimerRef.current !== null) {
+      clearInterval(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
+  }, []);
+
+  // Partials arrive as ~600ms multi-word bursts. Reveal each new word on a
+  // short cadence so the panel reads as continuous speech instead of chunk
+  // pops. Revisions (target no longer extends the visible prefix) snap.
+  const revealTo = useCallback(
+    (target) => {
+      revealTargetRef.current = target;
+      const tick = () => {
+        const full = revealTargetRef.current;
+        const current = visibleTextRef.current;
+        if (current === full) {
+          stopReveal();
+          return;
+        }
+        let next;
+        if (!full.startsWith(current)) {
+          next = full;
+        } else {
+          let end = current.length;
+          const wordsLeft = full.slice(end).trim().split(/\s+/).length;
+          const steps = wordsLeft > LIVE_TRANSCRIPT_WORD_REVEAL_BACKLOG ? 2 : 1;
+          for (let s = 0; s < steps && end < full.length; s += 1) {
+            end = nextWordBoundary(full, end);
+          }
+          next = full.slice(0, end);
+        }
+        setVisibleText(next);
+        if (next === full) stopReveal();
+      };
+      if (revealTimerRef.current === null) {
+        tick();
+        revealTimerRef.current = setInterval(tick, LIVE_TRANSCRIPT_WORD_REVEAL_MS);
+      }
+    },
+    [setVisibleText, stopReveal]
+  );
+
   const updateText = useCallback((value, { immediate = false } = {}) => {
     sourceTextRef.current = value;
     if (contentReadyRef.current) {
@@ -99,11 +163,13 @@ export function useLiveTranscriptPanel({
   const resumeText = useCallback(() => {
     contentReadyRef.current = true;
     setMeasurementText(sourceTextRef.current);
-    setText(sourceTextRef.current);
-  }, []);
+    revealTo(sourceTextRef.current);
+  }, [revealTo]);
 
   const resetText = useCallback(() => {
     textSchedulerRef.current.cancel();
+    stopReveal();
+    revealTargetRef.current = "";
     sourceTextRef.current = "";
     contentReadyRef.current = false;
     presentationGenerationRef.current += 1;
@@ -111,10 +177,10 @@ export function useLiveTranscriptPanel({
       revision: null,
       promise: Promise.resolve({ success: true }),
     };
-    setText("");
+    setVisibleText("");
     setMeasurementText("");
     setSessionKey((current) => current + 1);
-  }, []);
+  }, [setVisibleText, stopReveal]);
 
   // Pending transcript text is rendered invisibly first. Its real wrapping is
   // measured at the final panel width, the native window settles to that
@@ -145,7 +211,7 @@ export function useLiveTranscriptPanel({
         if (generation !== presentationGenerationRef.current) return;
         revealFrame = requestAnimationFrame(() => {
           if (generation === presentationGenerationRef.current) {
-            setText(measurementText);
+            revealTo(measurementText);
           }
         });
       });
@@ -156,7 +222,7 @@ export function useLiveTranscriptPanel({
       cancelAnimationFrame(measurementFrame);
       cancelAnimationFrame(revealFrame);
     };
-  }, [measurementText, open]);
+  }, [measurementText, open, revealTo]);
 
   const clearEntranceTimers = useCallback(() => {
     for (const timer of entranceTimersRef.current) clearTimeout(timer);
@@ -188,6 +254,7 @@ export function useLiveTranscriptPanel({
       setEntrancePhase("idle");
       contentReadyRef.current = false;
       textSchedulerRef.current.cancel();
+      stopReveal();
       clearTimeout(closeTimerRef.current);
       closeTimerRef.current = setTimeout(() => {
         setMounted(false);
@@ -197,7 +264,7 @@ export function useLiveTranscriptPanel({
         }
       }, LIVE_TRANSCRIPT_CLOSE_UNMOUNT_MS);
     },
-    [clearEntranceTimers, clearFinalHide, resetText]
+    [clearEntranceTimers, clearFinalHide, resetText, stopReveal]
   );
 
   const openPanel = useCallback(() => {
@@ -232,7 +299,9 @@ export function useLiveTranscriptPanel({
       setManuallyCollapsed(false);
       contentReadyRef.current = false;
       textSchedulerRef.current.cancel();
-      setText("");
+      stopReveal();
+      revealTargetRef.current = "";
+      setVisibleText("");
       setEntrancePhase("encapsulate");
       setMounted(true);
       cancelAnimationFrame(openFrameRef.current);
@@ -291,6 +360,8 @@ export function useLiveTranscriptPanel({
     prepareBufferedText,
     requestHeight,
     resumeText,
+    setVisibleText,
+    stopReveal,
   ]);
 
   const reopen = useCallback(() => {
@@ -466,8 +537,9 @@ export function useLiveTranscriptPanel({
       cancelAnimationFrame(openFrameRef.current);
       clearEntranceTimers();
       textSchedulerRef.current.cancel();
+      stopReveal();
     },
-    [clearEntranceTimers, clearFinalHide]
+    [clearEntranceTimers, clearFinalHide, stopReveal]
   );
 
   return {
