@@ -7,8 +7,8 @@ import {
   shouldOfferLiveTranscriptReopen,
 } from "../helpers/voicePillPresentation";
 
-const LIVE_TRANSCRIPT_RENDER_INTERVAL_MS = 80;
-const LIVE_TRANSCRIPT_SHELL_GROW_MS = 120;
+const LIVE_TRANSCRIPT_RENDER_INTERVAL_MS = 32;
+const LIVE_TRANSCRIPT_SHELL_GROW_MS = 60;
 const LIVE_TRANSCRIPT_CLOSE_UNMOUNT_MS = 320;
 const LIVE_TRANSCRIPT_FINAL_HIDE_MS = 4000;
 
