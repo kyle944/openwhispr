@@ -28,6 +28,22 @@ import {
 } from "../config/inferenceScopes";
 import { normalizeChineseScriptPreference } from "../utils/chineseScript";
 import { adjustBedrockModelForRegion } from "../utils/bedrockRegions";
+import {
+  normalizeCleanupIntensity,
+  normalizeCleanupOutputMode,
+  normalizeCleanupTone,
+  type CleanupIntensity,
+  type CleanupOutputMode,
+  type CleanupTone,
+} from "../utils/writingPreferences";
+import {
+  normalizePerAppWritingStyles,
+  rememberDictationTargetApp as rememberPerAppTarget,
+  removePerAppWritingStyle,
+  updatePerAppWritingStyle,
+  type DictationTargetApp,
+  type PerAppWritingStyle,
+} from "../utils/perAppWritingStyles";
 import modelRegistryData from "../models/modelRegistryData.json";
 import {
   getTranscriptionSelection,
@@ -267,6 +283,7 @@ const BOOLEAN_SETTINGS = new Set([
   "assemblyAiStreaming",
   "autoGenerateNoteTitle",
   "useCleanupModel",
+  "backgroundCleanupEnabled",
   "useDictationAgent",
   "voiceAgentScreenContext",
   "useDictationAgentVisionModel",
@@ -287,6 +304,7 @@ const BOOLEAN_SETTINGS = new Set([
   "isSignedIn",
   "autoPasteEnabled",
   "keepTranscriptionInClipboard",
+  "spokenEnterEnabled",
   "dataRetentionEnabled",
   "saveDiscardedTranscriptions",
   "noteFilesEnabled",
@@ -644,6 +662,8 @@ export interface SettingsState
   showTranscriptionPreview: boolean;
   autoPasteEnabled: boolean;
   keepTranscriptionInClipboard: boolean;
+  /** On macOS, submit an ordinary dictation after its terminal voice directive. */
+  spokenEnterEnabled: boolean;
   noteFilesEnabled: boolean;
   noteFilesPath: string;
 
@@ -653,6 +673,11 @@ export interface SettingsState
   remoteTranscriptionModel: string;
   cleanupMode: InferenceMode;
   cleanupRemoteUrl: string;
+  cleanupIntensity: CleanupIntensity;
+  cleanupOutputMode: CleanupOutputMode;
+  cleanupTone: CleanupTone;
+  backgroundCleanupEnabled: boolean;
+  perAppWritingStyles: PerAppWritingStyle[];
 
   meetingTranscriptionMode: InferenceMode;
   meetingUseLocalWhisper: boolean;
@@ -755,6 +780,16 @@ export interface SettingsState
   setRemoteTranscriptionModel: (model: string) => void;
   setCleanupMode: (mode: InferenceMode) => void;
   setCleanupRemoteUrl: (url: string) => void;
+  setCleanupIntensity: (value: CleanupIntensity) => void;
+  setCleanupOutputMode: (value: CleanupOutputMode) => void;
+  setCleanupTone: (value: CleanupTone) => void;
+  setBackgroundCleanupEnabled: (value: boolean) => void;
+  rememberDictationTargetApp: (target: DictationTargetApp | null) => void;
+  setPerAppWritingStyle: (
+    bundleId: string,
+    patch: { cleanupOutputMode?: CleanupOutputMode | null; cleanupTone?: CleanupTone | null }
+  ) => void;
+  removePerAppWritingStyle: (bundleId: string) => void;
 
   setMeetingTranscriptionMode: (mode: InferenceMode) => void;
   setMeetingUseLocalWhisper: (value: boolean) => void;
@@ -944,6 +979,7 @@ export interface SettingsState
   setShowTranscriptionPreview: (value: boolean) => void;
   setAutoPasteEnabled: (value: boolean) => void;
   setKeepTranscriptionInClipboard: (value: boolean) => void;
+  setSpokenEnterEnabled: (value: boolean) => void;
   setNoteFilesEnabled: (value: boolean) => void;
   setNoteFilesPath: (value: string) => void;
   setIsSignedIn: (value: boolean) => void;
@@ -1249,6 +1285,17 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   useDictationAgent: readBoolean("useDictationAgent", true),
   cleanupModel: readString("cleanupModel", ""),
   cleanupProvider: readString("cleanupProvider", "openai"),
+  cleanupIntensity: normalizeCleanupIntensity(readString("cleanupIntensity", "light")),
+  cleanupOutputMode: normalizeCleanupOutputMode(readString("cleanupOutputMode", "dictation")),
+  cleanupTone: normalizeCleanupTone(readString("cleanupTone", "default")),
+  backgroundCleanupEnabled: readBoolean("backgroundCleanupEnabled", true),
+  perAppWritingStyles: (() => {
+    try {
+      return normalizePerAppWritingStyles(JSON.parse(readString("perAppWritingStyles", "[]")));
+    } catch {
+      return [];
+    }
+  })(),
 
   // Secrets hydrate from main process in initializeSettings, never from localStorage.
   openaiApiKey: "",
@@ -1393,6 +1440,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   showTranscriptionPreview: readBoolean("showTranscriptionPreview", false),
   autoPasteEnabled: readBoolean("autoPasteEnabled", true),
   keepTranscriptionInClipboard: readBoolean("keepTranscriptionInClipboard", false),
+  spokenEnterEnabled: readBoolean("spokenEnterEnabled", false),
   noteFilesEnabled: readBoolean("noteFilesEnabled", false),
   noteFilesPath: readString("noteFilesPath", ""),
   isSignedIn: readBoolean("isSignedIn", false),
@@ -1775,6 +1823,43 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   setUseDictationAgent: createBooleanSetter("useDictationAgent"),
   setCleanupProvider: createStringSetter("cleanupProvider"),
   setCleanupModel: createStringSetter("cleanupModel"),
+  setCleanupIntensity: (value) => {
+    const normalized = normalizeCleanupIntensity(value);
+    if (isBrowser) localStorage.setItem("cleanupIntensity", normalized);
+    set({ cleanupIntensity: normalized });
+  },
+  setCleanupOutputMode: (value) => {
+    const normalized = normalizeCleanupOutputMode(value);
+    if (isBrowser) localStorage.setItem("cleanupOutputMode", normalized);
+    set({ cleanupOutputMode: normalized });
+  },
+  setCleanupTone: (value) => {
+    const normalized = normalizeCleanupTone(value);
+    if (isBrowser) localStorage.setItem("cleanupTone", normalized);
+    set({ cleanupTone: normalized });
+  },
+  setBackgroundCleanupEnabled: createBooleanSetter("backgroundCleanupEnabled"),
+  rememberDictationTargetApp: (target) => {
+    set((state) => {
+      const next = rememberPerAppTarget(state.perAppWritingStyles, target);
+      if (isBrowser) localStorage.setItem("perAppWritingStyles", JSON.stringify(next));
+      return { perAppWritingStyles: next };
+    });
+  },
+  setPerAppWritingStyle: (bundleId, patch) => {
+    set((state) => {
+      const next = updatePerAppWritingStyle(state.perAppWritingStyles, bundleId, patch);
+      if (isBrowser) localStorage.setItem("perAppWritingStyles", JSON.stringify(next));
+      return { perAppWritingStyles: next };
+    });
+  },
+  removePerAppWritingStyle: (bundleId) => {
+    set((state) => {
+      const next = removePerAppWritingStyle(state.perAppWritingStyles, bundleId);
+      if (isBrowser) localStorage.setItem("perAppWritingStyles", JSON.stringify(next));
+      return { perAppWritingStyles: next };
+    });
+  },
 
   // Replaces the whole dictionary: anything absent from `words` is deleted.
   // Editing specific words wants updateCustomDictionary instead (#1295).
@@ -2228,6 +2313,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   setShowTranscriptionPreview: createBooleanSetter("showTranscriptionPreview"),
   setAutoPasteEnabled: createBooleanSetter("autoPasteEnabled"),
   setKeepTranscriptionInClipboard: createBooleanSetter("keepTranscriptionInClipboard"),
+  setSpokenEnterEnabled: createBooleanSetter("spokenEnterEnabled"),
   setNoteFilesEnabled: createBooleanSetter("noteFilesEnabled"),
   setNoteFilesPath: createStringSetter("noteFilesPath"),
 
@@ -3329,7 +3415,19 @@ export async function initializeSettings(): Promise<void> {
       return;
 
     let value: unknown;
-    if (BOOLEAN_SETTINGS.has(key)) {
+    if (key === "cleanupIntensity") {
+      value = normalizeCleanupIntensity(newValue);
+    } else if (key === "cleanupOutputMode") {
+      value = normalizeCleanupOutputMode(newValue);
+    } else if (key === "cleanupTone") {
+      value = normalizeCleanupTone(newValue);
+    } else if (key === "perAppWritingStyles") {
+      try {
+        value = normalizePerAppWritingStyles(JSON.parse(newValue));
+      } catch {
+        value = [];
+      }
+    } else if (BOOLEAN_SETTINGS.has(key)) {
       value = newValue === "true";
     } else if (ARRAY_SETTINGS.has(key)) {
       try {

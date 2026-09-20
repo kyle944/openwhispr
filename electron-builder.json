@@ -141,6 +141,10 @@
     {
       "from": "resources/mediaremote-adapter/LICENSE",
       "to": "bin/mediaremote-adapter.LICENSE"
+    },
+    {
+      "from": "scripts/openwhispr-mcp.js",
+      "to": "bin/openwhispr-mcp.js"
     }
   ],
   "mac": {

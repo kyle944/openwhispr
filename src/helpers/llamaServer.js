@@ -7,6 +7,7 @@ const { killProcess } = require("../utils/process");
 const { isPortAvailable } = require("../utils/serverUtils");
 const { getSafeTempDir } = require("./safeTempDir");
 const { app } = require("electron");
+const { createAbortError } = require("./abortError");
 const sidecarPidFile = require("./sidecarPidFile");
 const { BIN_SUBDIR: LLAMA_VULKAN_BIN_SUBDIR } = require("./llamaVulkanManager");
 
@@ -541,6 +542,10 @@ class LlamaServerManager {
       throw new Error("llama-server is not running");
     }
 
+    if (options.signal?.aborted) {
+      throw createAbortError("llama-server request aborted");
+    }
+
     this.clearIdleTimer();
 
     const requestBody = {
@@ -560,6 +565,22 @@ class LlamaServerManager {
 
     return new Promise((resolve, reject) => {
       const startTime = Date.now();
+      let settled = false;
+
+      const settle = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        options.signal?.removeEventListener("abort", abortRequest);
+        callback(value);
+      };
+
+      const abortRequest = () => {
+        // llama-server may complete its in-flight decode after its client
+        // disconnects; rejecting here still releases the foreground scheduler.
+        const error = createAbortError("llama-server request aborted");
+        req.destroy(error);
+        settle(reject, error);
+      };
 
       const req = http.request(
         {
@@ -585,7 +606,7 @@ class LlamaServerManager {
             });
 
             if (res.statusCode !== 200) {
-              reject(new Error(`llama-server returned status ${res.statusCode}: ${data}`));
+              settle(reject, new Error(`llama-server returned status ${res.statusCode}: ${data}`));
               return;
             }
 
@@ -595,26 +616,35 @@ class LlamaServerManager {
                 options.requireCompleteOutput &&
                 ["length", "max_tokens"].includes(response.choices?.[0]?.finish_reason)
               ) {
-                reject(new Error("Model output was truncated before the selection edit completed"));
+                settle(
+                  reject,
+                  new Error("Model output was truncated before the selection edit completed")
+                );
                 return;
               }
               const message = response.choices?.[0]?.message;
               const text = message?.content || message?.reasoning_content || "";
-              resolve(text.trim());
+              settle(resolve, text.trim());
             } catch (e) {
-              reject(new Error(`Failed to parse llama-server response: ${e.message}`));
+              settle(reject, new Error(`Failed to parse llama-server response: ${e.message}`));
             }
           });
         }
       );
 
       req.on("error", (error) => {
-        reject(new Error(`llama-server request failed: ${error.message}`));
+        if (error.name === "AbortError") {
+          settle(reject, error);
+          return;
+        }
+        settle(reject, new Error(`llama-server request failed: ${error.message}`));
       });
       req.on("timeout", () => {
         req.destroy();
-        reject(new Error("llama-server request timed out"));
+        settle(reject, new Error("llama-server request timed out"));
       });
+
+      options.signal?.addEventListener("abort", abortRequest, { once: true });
 
       req.write(body);
       req.end();

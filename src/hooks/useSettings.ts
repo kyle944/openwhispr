@@ -1,5 +1,5 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef } from "react";
-import { useSettingsStore, initializeSettings } from "../stores/settingsStore";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { useSettingsStore, initializeSettings, getSettings } from "../stores/settingsStore";
 import logger from "../utils/logger";
 import { useLocalStorage } from "./useLocalStorage";
 import type {
@@ -14,7 +14,11 @@ import { usePolicyStore } from "../stores/policyStore";
 import { getCleanupSystemPrompt, wrapCleanupTranscript } from "../config/prompts";
 import { resolveCleanupLanguage } from "../utils/chineseScript";
 import { getDictionaryHintWords } from "../utils/snippets";
-import { rememberLearnedCorrectionExample } from "../utils/learnedCorrectionExamples";
+import {
+  readLearnedCorrectionExamples,
+  rememberLearnedCorrectionExample,
+} from "../utils/learnedCorrectionExamples";
+import { getCleanupFormattingFingerprint } from "../utils/writingPreferences";
 
 export interface TranscriptionSettings {
   uiLanguage: string;
@@ -125,6 +129,10 @@ function useSettingsInternal() {
   // One-time initialization: sync API keys, dictation key, activation mode,
   // UI language, and dictionary from the main process / SQLite.
   const initializationRef = useRef<Promise<void> | null>(null);
+  // Learned corrections live outside the settings store but are appended to the
+  // cleanup prompt. Advance this revision only when the stored examples change
+  // so the pre-warm below refreshes the llama.cpp prefix before the next dictation.
+  const [learnedCorrectionsRevision, setLearnedCorrectionsRevision] = useState(0);
   useEffect(() => {
     if (initializationRef.current) return;
     initializationRef.current = initializeSettings();
@@ -149,8 +157,14 @@ function useSettingsInternal() {
       await (initializationRef.current || initializeSettings());
       if (cancelled) return;
 
-      const current = useSettingsStore.getState();
-      if (!current.useCleanupModel || current.cleanupMode !== "local" || !current.cleanupModel)
+      const current = getSettings();
+      if (
+        !current.useCleanupModel ||
+        current.cleanupMode !== "local" ||
+        !current.cleanupModel ||
+        current.backgroundCleanupEnabled === false ||
+        current.cleanupIntensity === "none"
+      )
         return;
 
       const agentName = localStorage.getItem("agentName") || null;
@@ -166,6 +180,7 @@ function useSettingsInternal() {
         systemPrompt,
         userPrompt: wrapCleanupTranscript(""),
         disableThinking: current.cleanupDisableThinking,
+        cacheKey: getCleanupFormattingFingerprint(current),
       });
     };
 
@@ -188,6 +203,11 @@ function useSettingsInternal() {
     store.preferredLanguage,
     store.uiLanguage,
     store.customPrompts.cleanup,
+    store.cleanupIntensity,
+    store.cleanupOutputMode,
+    store.cleanupTone,
+    store.backgroundCleanupEnabled,
+    learnedCorrectionsRevision,
   ]);
 
   // Refresh the in-memory store from main-process broadcasts (auto-learn, sync
@@ -206,7 +226,9 @@ function useSettingsInternal() {
   useEffect(() => {
     if (typeof window === "undefined" || !window.electronAPI?.onCorrectionExampleLearned) return;
     return window.electronAPI.onCorrectionExampleLearned((example) => {
-      rememberLearnedCorrectionExample(example);
+      const before = JSON.stringify(readLearnedCorrectionExamples());
+      const after = JSON.stringify(rememberLearnedCorrectionExample(example));
+      if (after !== before) setLearnedCorrectionsRevision((revision) => revision + 1);
     });
   }, []);
 

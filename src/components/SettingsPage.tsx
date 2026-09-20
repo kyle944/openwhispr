@@ -86,6 +86,8 @@ import DeveloperSection from "./DeveloperSection";
 import ChatAgentSettings from "./settings/ChatAgentSettings";
 import DictationAgentSettings from "./settings/DictationAgentSettings";
 import DictationTranslationSettings from "./settings/DictationTranslationSettings";
+import WritingSettings from "./settings/WritingSettings";
+import PerAppWritingStyles from "./settings/PerAppWritingStyles";
 import InferenceConfigEditor from "./settings/InferenceConfigEditor";
 import { MeetingTranscriptionPanel } from "./settings/MeetingSettings";
 import { UploadTranscriptionPanel } from "./settings/UploadSettings";
@@ -1198,6 +1200,8 @@ export default function SettingsPage({
   const [linuxPttAvailable, setLinuxPttAvailable] = useState(true);
 
   const platform = getCachedPlatform();
+  const spokenEnterEnabled = useSettingsStore((state) => state.spokenEnterEnabled);
+  const setSpokenEnterEnabled = useSettingsStore((state) => state.setSpokenEnterEnabled);
 
   const [autoStartEnabled, setAutoStartEnabled] = useState(false);
   const [autoStartNeedsApproval, setAutoStartNeedsApproval] = useState(false);
@@ -2654,9 +2658,28 @@ export default function SettingsPage({
                     label={t("settingsPage.general.clipboard.autoPaste")}
                     description={t("settingsPage.general.clipboard.autoPasteDescription")}
                   >
-                    <Toggle checked={autoPasteEnabled} onChange={setAutoPasteEnabled} />
+                    <Toggle
+                      checked={autoPasteEnabled}
+                      onChange={setAutoPasteEnabled}
+                      ariaLabel={t("settingsPage.general.clipboard.autoPaste")}
+                    />
                   </SettingsRow>
                 </SettingsPanelRow>
+                {platform === "darwin" && (
+                  <SettingsPanelRow>
+                    <SettingsRow
+                      label={t("settingsPage.general.clipboard.spokenEnter")}
+                      description={t("settingsPage.general.clipboard.spokenEnterDescription")}
+                    >
+                      <Toggle
+                        checked={spokenEnterEnabled}
+                        onChange={setSpokenEnterEnabled}
+                        disabled={!autoPasteEnabled}
+                        ariaLabel={t("settingsPage.general.clipboard.spokenEnter")}
+                      />
+                    </SettingsRow>
+                  </SettingsPanelRow>
+                )}
                 <SettingsPanelRow>
                   <SettingsRow
                     label={t("settingsPage.general.clipboard.keepInClipboard")}
@@ -2665,6 +2688,7 @@ export default function SettingsPage({
                     <Toggle
                       checked={keepTranscriptionInClipboard}
                       onChange={setKeepTranscriptionInClipboard}
+                      ariaLabel={t("settingsPage.general.clipboard.keepInClipboard")}
                     />
                   </SettingsRow>
                 </SettingsPanelRow>
@@ -4304,6 +4328,8 @@ EOF`,
             renderChatIntelligence={() => <ChatAgentSettings />}
             renderDictationCleanup={() => (
               <div className="space-y-6">
+                <WritingSettings />
+                <PerAppWritingStyles />
                 <AiModelsSection
                   useCleanupModel={useCleanupModel}
                   setUseCleanupModel={(value) => {

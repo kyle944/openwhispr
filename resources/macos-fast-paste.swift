@@ -8,6 +8,7 @@ if !AXIsProcessTrusted() {
 // can tell a copied selection from a target that changed underneath it. With no
 // arguments this stays what the paste path expects: ⌘V, no output.
 let copyMode = CommandLine.arguments.contains("--copy")
+let submitAfterPaste = CommandLine.arguments.contains("--submit")
 let virtualKey: CGKeyCode = copyMode ? 0x08 : 0x09  // kVK_ANSI_C : kVK_ANSI_V
 
 let targetPid: pid_t? = {
@@ -21,6 +22,12 @@ let targetPid: pid_t? = {
 }()
 
 if CommandLine.arguments.contains("--target-pid") && targetPid == nil {
+    exit(3)
+}
+
+// Submitting is only meaningful for a targeted ordinary paste. Refuse rather
+// than falling back to whichever application owns focus.
+if submitAfterPaste && (copyMode || targetPid == nil) {
     exit(3)
 }
 
@@ -56,13 +63,43 @@ guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: virtualKey, ke
 
 keyDown.flags = .maskCommand
 keyUp.flags = .maskCommand
-keyDown.post(tap: .cgSessionEventTap)
+if let targetPid {
+    // Core Graphics supplies a PID-addressed event API. This removes the
+    // focus-race window between targeting the recorded app and Cmd+V.
+    keyDown.postToPid(targetPid)
+} else {
+    keyDown.post(tap: .cgSessionEventTap)
+}
 usleep(8000)
-keyUp.post(tap: .cgSessionEventTap)
+if let targetPid {
+    keyUp.postToPid(targetPid)
+} else {
+    keyUp.post(tap: .cgSessionEventTap)
+}
 usleep(20000)
 
 if let target = target {
     print("COPY_OK \(target.processIdentifier) \(target.localizedName ?? "")")
 } else if let targetPid {
-    print("PASTE_OK \(targetPid)")
+    if submitAfterPaste {
+        // The paste key events were addressed to targetPid. Before emitting
+        // Return, also require that the same app remains frontmost; otherwise
+        // leave the text pasted and report a deliberately skipped submission.
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == targetPid else {
+            print("PASTE_OK \(targetPid) SUBMIT_SKIPPED target_changed")
+            exit(0)
+        }
+        guard let returnDown = CGEvent(keyboardEventSource: nil, virtualKey: 0x24, keyDown: true),
+              let returnUp = CGEvent(keyboardEventSource: nil, virtualKey: 0x24, keyDown: false) else {
+            print("PASTE_OK \(targetPid) SUBMIT_SKIPPED event_unavailable")
+            exit(0)
+        }
+        returnDown.postToPid(targetPid)
+        usleep(8000)
+        returnUp.postToPid(targetPid)
+        usleep(8000)
+        print("PASTE_OK \(targetPid) SUBMITTED")
+    } else {
+        print("PASTE_OK \(targetPid)")
+    }
 }

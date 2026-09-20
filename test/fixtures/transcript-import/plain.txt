@@ -1,0 +1,2 @@
+Plain local transcript.
+It has no supplied speaker labels.

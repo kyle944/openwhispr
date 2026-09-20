@@ -637,7 +637,23 @@
         "recover": "Wiederherstellen",
         "recovered": "Wiederhergestellt"
       },
-      "retryTranslationMode": "Übersetzungsmodus"
+      "retryTranslationMode": "Übersetzungsmodus",
+      "searchLabel": "Verlauf durchsuchen",
+      "searchPlaceholder": "Alle lokalen Transkriptionen durchsuchen",
+      "dateFilterLabel": "Datum",
+      "allDates": "Alle Daten",
+      "today": "Heute",
+      "last7Days": "Letzte 7 Tage",
+      "last30Days": "Letzte 30 Tage",
+      "usage": "{{entries}} Einträge · {{words}} Wörter",
+      "matchingUsage": "{{entries}} passende Einträge · {{words}} Wörter",
+      "searchScope": "Durchsucht den gesamten lokalen Verlauf",
+      "exportText": "Text exportieren",
+      "exportJson": "JSON exportieren",
+      "exportFailed": "Verlauf konnte nicht exportiert werden",
+      "searchFailed": "Verlauf konnte nicht durchsucht werden",
+      "noMatches": "Keine passenden Transkriptionen",
+      "loadMore": "Mehr laden"
     },
     "cloudMigration": {
       "title": "Willkommen bei OpenWhispr Cloud",
@@ -1945,6 +1961,38 @@
       "description": "Bereinigt Transkriptionen, verarbeitet Befehle und korrigiert Fehler unter Beibehaltung Ihres Stils.",
       "enableTextCleanup": "Textbereinigung aktivieren",
       "enableTextCleanupDescription": "KI entfernt Füllwörter, korrigiert Grammatik und Zeichensetzung",
+      "writing": {
+        "title": "Schreiben",
+        "description": "Wählen Sie, wie Diktate bereinigt und formatiert werden.",
+        "availability": "Schreiboptionen sind mit lokalen und eigenen Bereinigungsanbietern verfügbar.",
+        "intensity": "Bereinigung",
+        "intensityDescription": "Keine fügt das Rohtranskript ein. Leicht behält das bisherige Verhalten bei. Ausformuliert überarbeitet stärker.",
+        "intensityOptions": { "none": "Keine", "light": "Leicht", "polished": "Ausformuliert" },
+        "outputMode": "Ausgabe",
+        "outputModeDescription": "Formatieren Sie Diktiertes als Diktat, Notizen mit ausdrücklich genannten Aufgaben oder E-Mail-Entwurf.",
+        "outputModeOptions": {
+          "dictation": "Diktat",
+          "notesToDos": "Notizen und Aufgaben",
+          "email": "E-Mail"
+        },
+        "tone": "Ton",
+        "toneDescription": "Wählen Sie einen Ton nur, wenn die Bereinigung die Formulierung anpassen soll.",
+        "toneOptions": { "default": "Standard", "formal": "Formell", "casual": "Locker" },
+        "backgroundCleanup": "Bereinigung bereithalten",
+        "backgroundCleanupDescription": "Bereitet die Bereinigung zwischen Diktaten vor, damit sie nach dem Sprechen bereit ist."
+      },
+      "perAppStyles": {
+        "title": "App-Stile",
+        "description": "Überschreiben Sie Ausgabe und Ton für Apps, in denen Sie diktiert haben. Nur App-Name und Kennung werden auf diesem Gerät gespeichert.",
+        "availability": "App-Stile sind verfügbar, wenn die Bereinigung ein lokales Modell verwendet.",
+        "empty": "Diktieren Sie einmal in einer App, um sie hier hinzuzufügen.",
+        "output": "Ausgabe",
+        "tone": "Ton",
+        "followGlobal": "Globale Einstellung verwenden",
+        "outputFor": "Ausgabestil für {{app}}",
+        "toneFor": "Ton für {{app}}",
+        "remove": "{{app}} entfernen"
+      },
       "modes": {
         "openwhispr": "OpenWhispr Cloud",
         "providers": "Cloud-Anbieter",
@@ -2121,7 +2169,9 @@
         "autoPaste": "Automatisches Einfügen",
         "autoPasteDescription": "Transkribierten Text nach dem Diktieren automatisch in die aktive App einfügen",
         "keepInClipboard": "Transkription in der Zwischenablage behalten",
-        "keepInClipboardDescription": "Diktierten Text in der Zwischenablage behalten, damit Sie ihn bei Bedarf manuell einfügen können"
+        "keepInClipboardDescription": "Diktierten Text in der Zwischenablage behalten, damit Sie ihn bei Bedarf manuell einfügen können",
+        "spokenEnter": "Mit gesprochenem Enter senden",
+        "spokenEnterDescription": "Sagen Sie auf dem Mac nach einem vollständigen Diktat \"press Enter\", um es einzufügen und in derselben App die Eingabetaste zu drücken."
       },
       "startup": {
         "launchAtLogin": "Beim Anmelden starten",
@@ -3058,7 +3108,18 @@
       "queueFailed": "{{n}} fehlgeschlagen",
       "urlFileTooLarge": "Die Datei ist zu groß zum Herunterladen. Die maximale Größe beträgt 500 MB.",
       "urlYoutubeBlocked": "YouTube blockiert Downloads aus Ihrem Netzwerk vorübergehend. Versuchen Sie es später erneut.",
-      "customEndpointInvalid": "Benutzerdefinierter Transkriptionsendpunkt ist nicht konfiguriert oder ungültig. Aktualisieren Sie ihn in den Einstellungen."
+      "customEndpointInvalid": "Benutzerdefinierter Transkriptionsendpunkt ist nicht konfiguriert oder ungültig. Aktualisieren Sie ihn in den Einstellungen.",
+      "importTranscript": "Transkript importieren",
+      "importDescription": "TXT, Markdown, SRT, VTT oder JSON · bis zu 10 MB · bleibt auf diesem Gerät",
+      "importChooseFile": "Transkriptdatei auswählen",
+      "importing": "Importieren...",
+      "importComplete": "Transkript importiert",
+      "importDuplicate": "Dieses Transkript wurde bereits importiert.",
+      "importTooLarge": "Transkriptdateien dürfen höchstens 10 MB groß sein.",
+      "importUnsupported": "Wählen Sie ein TXT-, Markdown-, SRT-, VTT- oder JSON-Transkript.",
+      "importMalformed": "Diese Transkriptdatei konnte nicht gelesen werden.",
+      "importEmpty": "Die Transkriptdatei ist leer.",
+      "importFailed": "Das importierte Transkript konnte nicht gespeichert werden."
     },
     "meeting": {
       "title": "Besprechungsnotizen",

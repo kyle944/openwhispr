@@ -637,7 +637,23 @@
         "recover": "Recover",
         "recovered": "Recovered"
       },
-      "retryTranslationMode": "Translation Mode"
+      "retryTranslationMode": "Translation Mode",
+      "searchLabel": "Search history",
+      "searchPlaceholder": "Search all local transcriptions",
+      "dateFilterLabel": "Date",
+      "allDates": "All dates",
+      "today": "Today",
+      "last7Days": "Last 7 days",
+      "last30Days": "Last 30 days",
+      "usage": "{{entries}} entries · {{words}} words",
+      "matchingUsage": "{{entries}} matching entries · {{words}} words",
+      "searchScope": "Searches all local history",
+      "exportText": "Export text",
+      "exportJson": "Export JSON",
+      "exportFailed": "Couldn't export history",
+      "searchFailed": "Couldn't search history",
+      "noMatches": "No matching transcriptions",
+      "loadMore": "Load more"
     },
     "cloudMigration": {
       "title": "Welcome to OpenWhispr Cloud",
@@ -1945,6 +1961,46 @@
       "description": "Clean up transcriptions, handle commands, and fix errors while preserving your tone.",
       "enableTextCleanup": "Enable text cleanup",
       "enableTextCleanupDescription": "Use AI to remove filler words, fix grammar, and polish punctuation",
+      "writing": {
+        "title": "Writing",
+        "description": "Choose how dictation is cleaned and formatted.",
+        "availability": "Writing controls are available with Local and custom cleanup providers.",
+        "intensity": "Cleanup",
+        "intensityDescription": "None pastes the raw transcript. Light keeps the current cleanup behavior. Polished makes a fuller edit.",
+        "intensityOptions": {
+          "none": "None",
+          "light": "Light",
+          "polished": "Polished"
+        },
+        "outputMode": "Output",
+        "outputModeDescription": "Format dictated content as plain dictation, notes with explicit to-dos, or an email draft.",
+        "outputModeOptions": {
+          "dictation": "Dictation",
+          "notesToDos": "Notes & to-dos",
+          "email": "Email"
+        },
+        "tone": "Tone",
+        "toneDescription": "Use a tone only when you want cleanup to adjust the wording.",
+        "toneOptions": {
+          "default": "Default",
+          "formal": "Formal",
+          "casual": "Casual"
+        },
+        "backgroundCleanup": "Keep cleanup ready",
+        "backgroundCleanupDescription": "Prepare cleanup between dictations so it is ready when you finish speaking."
+      },
+      "perAppStyles": {
+        "title": "App styles",
+        "description": "Override output and tone for apps you've dictated into. Only the app name and identifier are stored on this device.",
+        "availability": "App styles are available when cleanup uses a Local model.",
+        "empty": "Dictate once in an app to add it here.",
+        "output": "Output",
+        "tone": "Tone",
+        "followGlobal": "Use global setting",
+        "outputFor": "Output style for {{app}}",
+        "toneFor": "Tone for {{app}}",
+        "remove": "Remove {{app}}"
+      },
       "modes": {
         "openwhispr": "OpenWhispr Cloud",
         "providers": "Cloud Providers",
@@ -2121,7 +2177,9 @@
         "autoPaste": "Automatic pasting",
         "autoPasteDescription": "Automatically paste transcribed text into the active app when dictation finishes",
         "keepInClipboard": "Keep transcription in clipboard",
-        "keepInClipboardDescription": "Keep dictated text in your clipboard so you can paste it manually if needed"
+        "keepInClipboardDescription": "Keep dictated text in your clipboard so you can paste it manually if needed",
+        "spokenEnter": "Submit with spoken Enter",
+        "spokenEnterDescription": "On Mac, say \"press Enter\" after a completed dictation to paste it and press Return in the same app."
       },
       "startup": {
         "launchAtLogin": "Launch at login",
@@ -3058,7 +3116,18 @@
       "queueFailed": "{{n}} failed",
       "urlFileTooLarge": "File is too large to download. The maximum size is 500 MB.",
       "urlYoutubeBlocked": "YouTube is temporarily blocking downloads from your network. Try again in a little while.",
-      "customEndpointInvalid": "Custom transcription endpoint is not configured or invalid. Update it in Settings."
+      "customEndpointInvalid": "Custom transcription endpoint is not configured or invalid. Update it in Settings.",
+      "importTranscript": "Import transcript",
+      "importDescription": "TXT, Markdown, SRT, VTT, or JSON · up to 10 MB · stays on this device",
+      "importChooseFile": "Choose transcript file",
+      "importing": "Importing...",
+      "importComplete": "Transcript imported",
+      "importDuplicate": "This transcript is already imported.",
+      "importTooLarge": "Transcript files must be 10 MB or smaller.",
+      "importUnsupported": "Choose a TXT, Markdown, SRT, VTT, or JSON transcript.",
+      "importMalformed": "This transcript file could not be read.",
+      "importEmpty": "The transcript file is empty.",
+      "importFailed": "Could not save the imported transcript."
     },
     "meeting": {
       "title": "Meeting Notes",

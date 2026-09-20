@@ -120,6 +120,27 @@ test("an explicit temperature of 0 reaches llama-server instead of the 0.7 defau
   assert.equal(requests[0].temperature, 0);
 });
 
+test("speculative wrapping preserves dollar replacement sequences exactly", async (t) => {
+  const { bridge, modelId } = await setupChain(t, () => completion("stop", "unused"));
+  const text = "Keep $& and $` and $' literal";
+  const payload = {
+    modelId,
+    systemPrompt: "exact cleanup prompt",
+    userPrompt: "<transcript>\n\n</transcript>\n\nOutput only the cleaned transcript.",
+    disableThinking: true,
+    cacheKey: "prefs-a",
+  };
+  const descriptor = bridge.createSpeculativeCleanupRequest(text, payload);
+  const wrapped = `<transcript>\n${text}\n</transcript>\n\nOutput only the cleaned transcript.`;
+  const config = bridge.buildInferenceConfig(wrapped, {
+    systemPrompt: payload.systemPrompt,
+    temperature: 0,
+    disableThinking: true,
+  });
+
+  assert.equal(descriptor.key, bridge.createRequestKey(wrapped, modelId, config, payload.cacheKey));
+});
+
 test("cleanup prompt prewarm coalesces and invalidates when llama-server restarts", async (t) => {
   const { modelManager, modelId, requests } = await setupChain(t, () =>
     completion("length", "warm")
@@ -202,6 +223,173 @@ test("changed cleanup prompts warm serially with the newest prompt last", async 
 
   await modelManager.prewarmPrompt(latest);
   assert.equal(requests.length, 2, "the newest completed prompt owns the cache marker");
+});
+
+test("formatting changes invalidate an otherwise identical warm prompt", async (t) => {
+  const { modelManager, modelId, requests } = await setupChain(t, () =>
+    completion("length", "warm")
+  );
+  const payload = {
+    modelId,
+    systemPrompt: "exact cleanup prompt",
+    userPrompt: "<transcript>\n\n</transcript>",
+    cacheKey: "cleanupIntensity=light;cleanupOutputMode=dictation",
+  };
+
+  await modelManager.prewarmPrompt(payload);
+  await modelManager.prewarmPrompt({
+    ...payload,
+    cacheKey: "cleanupIntensity=polished;cleanupOutputMode=dictation",
+  });
+
+  assert.equal(
+    requests.length,
+    2,
+    "a preference change must not reuse an incompatible cache marker"
+  );
+});
+
+test("an aborted foreground request keeps its AbortError through modelManager", async (t) => {
+  const { modelManager, modelId } = await setupChain(t, () => completion("stop", "unused"));
+  const controller = new AbortController();
+  const originalInference = modelManager.serverManager.inference;
+  modelManager.serverManager.inference = async (_messages, options) => {
+    assert.equal(options.signal, controller.signal);
+    const error = new Error("llama-server request aborted");
+    error.name = "AbortError";
+    throw error;
+  };
+  t.after(() => {
+    modelManager.serverManager.inference = originalInference;
+  });
+
+  await assert.rejects(
+    modelManager.runInference(modelId, "cleanup", { signal: controller.signal }),
+    (error) => error.name === "AbortError" && error.message === "llama-server request aborted"
+  );
+});
+
+test("an aborted request queued behind a warmup rejects before it can send HTTP", async (t) => {
+  const releases = [];
+  const { modelManager, modelId, requests } = await setupChain(
+    t,
+    () =>
+      new Promise((resolve) => {
+        releases.push(() => resolve(completion("stop", "warm")));
+      })
+  );
+  const payload = {
+    modelId,
+    systemPrompt: "exact cleanup prompt",
+    userPrompt: "<transcript>\n\n</transcript>",
+  };
+
+  const warmup = modelManager.prewarmPrompt(payload);
+  while (requests.length < 1) await new Promise((resolve) => setImmediate(resolve));
+
+  const controller = new AbortController();
+  const queued = modelManager.runInference(modelId, "speculative cleanup", {
+    systemPrompt: payload.systemPrompt,
+    signal: controller.signal,
+  });
+  controller.abort();
+
+  await assert.rejects(queued, { name: "AbortError" });
+  assert.equal(requests.length, 1, "the aborted queue entry never reaches llama-server");
+
+  releases.shift()();
+  await warmup;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests.length, 1, "the aborted entry remains a no-op when its turn arrives");
+});
+
+test("a foreground request admitted first owns the server through the warm-marker commit", async (t) => {
+  let activeRequests = 0;
+  let maxActiveRequests = 0;
+  const { modelManager, modelId, requests } = await setupChain(
+    t,
+    () =>
+      new Promise((resolve) => {
+        activeRequests += 1;
+        maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+        setImmediate(() => {
+          activeRequests -= 1;
+          resolve(completion("stop", "ok"));
+        });
+      })
+  );
+  const originalCheckModelValid = modelManager.checkModelValid;
+  let releaseValidation;
+  const validationReleased = new Promise((resolve) => {
+    releaseValidation = resolve;
+  });
+  let validationEntered;
+  const validationStarted = new Promise((resolve) => {
+    validationEntered = resolve;
+  });
+  let deferFirstValidation = true;
+  modelManager.checkModelValid = async (modelPath) => {
+    if (deferFirstValidation) {
+      deferFirstValidation = false;
+      validationEntered();
+      await validationReleased;
+    }
+    return originalCheckModelValid.call(modelManager, modelPath);
+  };
+  t.after(() => {
+    modelManager.checkModelValid = originalCheckModelValid;
+  });
+
+  const foreground = modelManager.runInference(modelId, "foreground", {
+    systemPrompt: "foreground prefix",
+  });
+  await validationStarted;
+  const payload = {
+    modelId,
+    systemPrompt: "cleanup prefix",
+    userPrompt: "<transcript>\n\n</transcript>",
+  };
+  const warmup = modelManager.prewarmPrompt(payload);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests.length, 0, "the later warmup stays behind validation and startup");
+
+  releaseValidation();
+  while (requests.length < 2) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests[0].messages[0].content, "foreground prefix");
+  assert.equal(requests[1].messages[0].content, payload.systemPrompt);
+  assert.equal(maxActiveRequests, 1, "only one request uses the mutable server at a time");
+
+  await Promise.all([foreground, warmup]);
+  await modelManager.prewarmPrompt(payload);
+  assert.equal(requests.length, 2, "the final committed warm marker is a true cache hit");
+});
+
+test("same-tick prewarm restores a prefix dirtied by an admitted foreground request", async (t) => {
+  const { modelManager, modelId, requests } = await setupChain(t, () => completion("stop", "ok"));
+  const payload = {
+    modelId,
+    systemPrompt: "cleanup prefix",
+    userPrompt: "<transcript>\n\n</transcript>",
+  };
+  await modelManager.prewarmPrompt(payload);
+  assert.equal(requests.length, 1);
+
+  const foreground = modelManager.runInference(modelId, "agent request", {
+    systemPrompt: "agent prefix",
+  });
+  const restore = modelManager.prewarmLatestPrompt();
+  await Promise.all([foreground, restore]);
+
+  assert.equal(
+    requests.length,
+    3,
+    "foreground runs first and the prewarm restores the evicted prefix"
+  );
+  assert.equal(requests[1].messages[0].content, "agent prefix");
+  assert.equal(requests[2].messages[0].content, payload.systemPrompt);
+
+  await modelManager.prewarmLatestPrompt();
+  assert.equal(requests.length, 3, "the restored marker is now the actual cache hit");
 });
 
 test("user-visible local inference waits for prompt warmup instead of competing", async (t) => {

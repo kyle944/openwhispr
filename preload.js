@@ -98,6 +98,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.invoke("db-save-transcription", text, rawText, options),
   getTranscriptions: (limit, options) =>
     ipcRenderer.invoke("db-get-transcriptions", limit, options),
+  queryTranscriptionHistory: (options) =>
+    ipcRenderer.invoke("db-query-transcription-history", options),
+  exportTranscriptionHistory: (options, format) =>
+    ipcRenderer.invoke("export-transcription-history", options, format),
   clearTranscriptions: () => ipcRenderer.invoke("db-clear-transcriptions"),
   deleteTranscription: (id) => ipcRenderer.invoke("db-delete-transcription", id),
 
@@ -621,6 +625,9 @@ contextBridge.exposeInMainWorld("electronAPI", {
 
   // llama-server
   llamaServerStart: (modelId) => ipcRenderer.invoke("llama-server-start", modelId),
+  llamaInferenceLeaseBegin: (modelId) => ipcRenderer.invoke("llama-inference-lease-begin", modelId),
+  llamaInferenceLeaseEnd: (leaseToken) =>
+    ipcRenderer.invoke("llama-inference-lease-end", leaseToken),
   llamaServerStop: () => ipcRenderer.invoke("llama-server-stop"),
   llamaServerStatus: () => ipcRenderer.invoke("llama-server-status"),
   llamaGpuReset: () => ipcRenderer.invoke("llama-gpu-reset"),

@@ -3,8 +3,7 @@ import { useTranslation } from "react-i18next";
 import AudioManager from "../helpers/audioManager";
 import logger from "../utils/logger";
 import { playStartCue, playStopCue } from "../utils/dictationCues";
-import { getSettings } from "../stores/settingsStore";
-import { expandSnippets } from "../utils/snippets";
+import { getSettings, useSettingsStore } from "../stores/settingsStore";
 import { getRecordingErrorTitle, getRecordingErrorDescription } from "../utils/recordingErrors";
 import { isAccessibilitySkipped } from "../utils/permissions";
 import {
@@ -20,6 +19,8 @@ import {
 } from "../utils/transcriptionPreview";
 import { canStartDictation } from "../utils/dictationReadiness";
 import { waitForVisualFrames } from "../utils/visualFrame";
+import { decideSpokenEnter } from "../utils/spokenEnter";
+import { getCachedPlatform } from "../utils/platform";
 
 // Maps a failed selection-replacement code to its `selectionEditing.*` toast
 // detail key; unlisted codes fall back to the generic "unavailable" message.
@@ -126,11 +127,22 @@ export const useAudioRecording = (toast, options = {}) => {
         // still the user's actual editing target here. Refresh it for recordings
         // started from the panel itself as well as from global hotkeys; otherwise
         // paste can reactivate a stale target from the preceding dictation.
+        let dictationTargetApp = null;
         try {
-          await window.electronAPI.captureDictationTarget?.();
+          const target = await window.electronAPI.captureDictationTarget?.();
+          if (target?.bundleId) {
+            dictationTargetApp = {
+              bundleId: target.bundleId,
+              appName: target.appName || target.bundleId,
+            };
+          }
         } catch (error) {
           logger.warn("Failed to refresh dictation target", { error: error?.message });
         }
+        // Replace this session's snapshot even when capture failed. Retaining an
+        // earlier app would apply its writing style after focus drift or a new
+        // session with no target.
+        audioManagerRef.current.setDictationTargetApp?.(dictationTargetApp);
 
         demoKindRef.current = getOnboardingDemoKind(voiceAgentRequested);
         audioManagerRef.current.setVoiceAgentRequested(voiceAgentRequested);
@@ -173,6 +185,9 @@ export const useAudioRecording = (toast, options = {}) => {
           ? await audioManagerRef.current.startStreamingRecording()
           : await audioManagerRef.current.startRecording();
         recordingStarted = didStart;
+        if (didStart) {
+          useSettingsStore.getState().rememberDictationTargetApp(dictationTargetApp);
+        }
         if (didStart) dismissDictationError?.();
 
         // A stop that landed while the start was still awaiting the mic open was
@@ -430,7 +445,17 @@ export const useAudioRecording = (toast, options = {}) => {
       onTranscriptionComplete: async (result) => {
         if (result.success) {
           dismissDictationError?.();
-          const transcribedText = result.text?.trim();
+          const spokenEnter = decideSpokenEnter(result.text || "", {
+            enabled: getSettings().spokenEnterEnabled && getCachedPlatform() === "darwin",
+            routeKind: result.routeKind,
+            assistantConversation: !!result.assistantConversation,
+            selectionEdit: !!result.selectionEdit?.sessionId,
+          });
+          // Keep rawText intact for history; only the terminal directive is
+          // removed from the user-visible and pasted final transcript.
+          const finalResult =
+            spokenEnter.text === result.text ? result : { ...result, text: spokenEnter.text };
+          const transcribedText = finalResult.text?.trim();
 
           if (!transcribedText) {
             window.electronAPI?.hideDictationPreview?.();
@@ -441,20 +466,13 @@ export const useAudioRecording = (toast, options = {}) => {
             return;
           }
 
-          // A selection edit must replace the model's exact result. Snippet
-          // expansion is a dictation convenience and can otherwise mutate a
-          // legitimate replacement that happens to contain a snippet trigger.
-          if (!result.selectionEdit?.sessionId) {
-            result.text = expandSnippets(result.text, getSettings().snippets);
-          }
-
-          setTranscript(result.text);
+          setTranscript(finalResult.text);
           onDemoEventRef.current?.({
             kind: demoKindRef.current,
             status: "success",
-            text: result.text,
+            text: finalResult.text,
           });
-          if (result.assistantConversation) {
+          if (finalResult.assistantConversation) {
             // The onboarding demo owns the transcript/result surface. Opening
             // the normal Assistant panel here would cover the flow even though
             // the main-process onboarding gate correctly hid normal surfaces.
@@ -467,9 +485,10 @@ export const useAudioRecording = (toast, options = {}) => {
               // the quoted selection when the selection-without-editor fallback
               // routed a highlighted passage here.
               window.electronAPI?.hideDictationPreview?.();
-              const { screenContext, transcript, selectedContext } = result.assistantConversation;
+              const { screenContext, transcript, selectedContext } =
+                finalResult.assistantConversation;
               onAssistantCommandRef.current?.({
-                text: expandSnippets(transcript, getSettings().snippets),
+                text: transcript,
                 attachment: screenContext
                   ? { image: screenContext.data, mediaType: screenContext.mediaType }
                   : null,
@@ -478,7 +497,7 @@ export const useAudioRecording = (toast, options = {}) => {
             }
           }
 
-          if (result.warning) {
+          if (finalResult.warning) {
             toast({
               title: t("hooks.audioRecording.partialTranscription.title"),
               description: t("hooks.audioRecording.partialTranscription.description"),
@@ -486,16 +505,17 @@ export const useAudioRecording = (toast, options = {}) => {
             });
           }
 
-          const isStreaming = result.source?.includes("streaming");
+          const isStreaming = finalResult.source?.includes("streaming");
           const { autoPasteEnabled, keepTranscriptionInClipboard } = getSettings();
           let pasteSucceeded = true;
+          let pasteSubmitted = false;
 
-          if (autoPasteEnabled && !result.assistantConversation) {
+          if (autoPasteEnabled && !finalResult.assistantConversation) {
             const pasteStart = performance.now();
-            if (result.selectionEdit?.sessionId) {
+            if (finalResult.selectionEdit?.sessionId) {
               const replacement = await window.electronAPI?.replaceSelectedText?.(
-                result.selectionEdit.sessionId,
-                result.text,
+                finalResult.selectionEdit.sessionId,
+                finalResult.text,
                 {
                   restoreClipboard: !keepTranscriptionInClipboard,
                   allowClipboardFallback: isAccessibilitySkipped(),
@@ -505,7 +525,7 @@ export const useAudioRecording = (toast, options = {}) => {
               if (!pasteSucceeded) {
                 window.electronAPI?.hideDictationPreview?.();
                 if (keepTranscriptionInClipboard) {
-                  await navigator.clipboard.writeText(result.text);
+                  await navigator.clipboard.writeText(finalResult.text);
                 }
                 const detailKey =
                   SELECTION_EDIT_DETAIL_KEY_BY_CODE[replacement?.code] || "unavailable";
@@ -516,38 +536,46 @@ export const useAudioRecording = (toast, options = {}) => {
                 });
               }
             } else {
-              pasteSucceeded = await audioManagerRef.current.safePaste(result.text, {
+              const pasteResult = await audioManagerRef.current.safePaste(finalResult.text, {
                 ...(isStreaming ? { fromStreaming: true } : {}),
                 restoreClipboard: !keepTranscriptionInClipboard,
                 allowClipboardFallback: isAccessibilitySkipped(),
+                ...(spokenEnter.submit ? { submit: true } : {}),
               });
+              pasteSucceeded = pasteResult.success;
+              pasteSubmitted = pasteResult.submitted;
             }
             logger.info(
               "Paste timing",
               {
                 pasteMs: Math.round(performance.now() - pasteStart),
-                source: result.source,
-                textLength: result.text.length,
-                selectionEdit: !!result.selectionEdit,
+                source: finalResult.source,
+                textLength: finalResult.text.length,
+                selectionEdit: !!finalResult.selectionEdit,
                 success: pasteSucceeded,
+                submitted: pasteSubmitted,
               },
               "streaming"
             );
-          } else if (keepTranscriptionInClipboard && !result.assistantConversation) {
-            await navigator.clipboard.writeText(result.text);
+          } else if (keepTranscriptionInClipboard && !finalResult.assistantConversation) {
+            await navigator.clipboard.writeText(finalResult.text);
           }
 
           // "Ready" is an outcome, not a promise. Publish the final preview only
           // after automatic paste (or the requested clipboard write) has settled.
-          if (!result.assistantConversation && pasteSucceeded) {
-            window.electronAPI?.completeDictationPreview?.({ text: result.text });
+          if (!finalResult.assistantConversation && pasteSucceeded) {
+            window.electronAPI?.completeDictationPreview?.({ text: finalResult.text });
           }
 
-          audioManagerRef.current.saveTranscription(result.text, result.rawText ?? result.text, {
-            clientTranscriptionId: result.clientTranscriptionId,
-          });
+          audioManagerRef.current.saveTranscription(
+            finalResult.text,
+            finalResult.rawText ?? finalResult.text,
+            {
+              clientTranscriptionId: finalResult.clientTranscriptionId,
+            }
+          );
 
-          if (result.source === "openai" && getSettings().useLocalWhisper) {
+          if (finalResult.source === "openai" && getSettings().useLocalWhisper) {
             toast({
               title: t("hooks.audioRecording.fallback.title"),
               description: t("hooks.audioRecording.fallback.description"),
@@ -556,13 +584,13 @@ export const useAudioRecording = (toast, options = {}) => {
           }
 
           // Cloud usage: limit reached after this transcription
-          if (result.source === "openwhispr" && result.limitReached) {
+          if (finalResult.source === "openwhispr" && finalResult.limitReached) {
             // Notify control panel to show UpgradePrompt dialog
             window.electronAPI?.notifyLimitReached?.({
-              wordsUsed: result.wordsUsed,
+              wordsUsed: finalResult.wordsUsed,
               limit:
-                result.wordsRemaining !== undefined
-                  ? result.wordsUsed + result.wordsRemaining
+                finalResult.wordsRemaining !== undefined
+                  ? finalResult.wordsUsed + finalResult.wordsRemaining
                   : 2000,
             });
           }

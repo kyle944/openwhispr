@@ -69,6 +69,7 @@ import { usePolicyStore } from "../../stores/policyStore";
 import { usePolicySnapshot, useTranscriptionContextAllowed } from "../../hooks/usePolicy";
 import { resolveTranscriptionRoute } from "../../helpers/transcriptionRoute";
 import { saveUploadNote, uploadTitleFallback } from "../../services/uploadNotes";
+import TranscriptImportPanel from "./TranscriptImportPanel";
 
 type UploadState = "idle" | "selected" | "downloading" | "transcribing" | "complete" | "error";
 
@@ -1085,6 +1086,13 @@ export default function UploadAudioView({ onNoteCreated, onOpenSettings }: Uploa
                 </div>
               )}
             </div>
+          )}
+
+          {state === "idle" && !batch.hasQueue && (
+            <TranscriptImportPanel
+              folderId={selectedFolderId ? Number(selectedFolderId) : null}
+              onNoteCreated={onNoteCreated}
+            />
           )}
 
           {state === "selected" && file && (

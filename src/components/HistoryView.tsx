@@ -1,7 +1,7 @@
-import { Fragment, useMemo } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "./ui/button";
-import { Loader2, Sparkles, Cloud, X, Mic, Trash2, Archive } from "lucide-react";
+import { Loader2, Sparkles, Cloud, X, Mic, Trash2, Archive, Download, Search } from "lucide-react";
 import TranscriptionItem from "./ui/TranscriptionItem";
 import type { TranscriptionItem as TranscriptionItemType } from "../types/electron";
 import { formatHotkeyLabel, parseHotkeyList } from "../utils/hotkeys";
@@ -11,6 +11,9 @@ import UpcomingMeetings from "./UpcomingMeetings";
 import { useSettingsStore } from "../stores/settingsStore";
 import { effectiveLocalHistoryEnabled } from "../stores/policyRules";
 import { usePolicyStore } from "../stores/policyStore";
+import { getHistoryDateBounds, type HistoryDateFilter } from "../utils/historyFilters";
+
+const HISTORY_PAGE_SIZE = 50;
 
 interface HistoryViewProps {
   history: TranscriptionItemType[];
@@ -57,14 +60,136 @@ export default function HistoryView({
     effectiveLocalHistoryEnabled(policyState, personalDataRetentionEnabled)
   );
   const { events, isLoading: eventsLoading, isConnected } = useUpcomingEvents();
+  const [searchQuery, setSearchQuery] = useState("");
+  const [dateFilter, setDateFilter] = useState<HistoryDateFilter>("all");
+  const [filteredHistory, setFilteredHistory] = useState<TranscriptionItemType[]>([]);
+  const [historySummary, setHistorySummary] = useState({ totalEntries: 0, totalWords: 0 });
+  const [hasLoadedSummary, setHasLoadedSummary] = useState(false);
+  const [isQueryLoading, setIsQueryLoading] = useState(false);
+  const [isFetchingMore, setIsFetchingMore] = useState(false);
+  const [queryError, setQueryError] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [exportingFormat, setExportingFormat] = useState<"txt" | "json" | null>(null);
+  const [queryRefreshVersion, setQueryRefreshVersion] = useState(0);
+  const queryGeneration = useRef(0);
+
+  const historyQuery = useMemo(
+    () => ({
+      query: searchQuery.trim(),
+      includeDiscarded: showDiscarded,
+      ...getHistoryDateBounds(dateFilter),
+    }),
+    [dateFilter, searchQuery, showDiscarded]
+  );
+  const hasActiveFilter = historyQuery.query.length > 0 || dateFilter !== "all";
+
+  const refreshFilteredHistory = useCallback(() => {
+    if (!hasActiveFilter) return;
+    queryGeneration.current += 1;
+    setQueryRefreshVersion((version) => version + 1);
+  }, [hasActiveFilter]);
+
+  useEffect(() => {
+    if (!hasActiveFilter) return;
+    const refresh = () => refreshFilteredHistory();
+    const disposers = [
+      window.electronAPI?.onTranscriptionAdded?.(refresh),
+      window.electronAPI?.onTranscriptionUpdated?.(refresh),
+      window.electronAPI?.onTranscriptionDeleted?.(refresh),
+      window.electronAPI?.onTranscriptionsCleared?.(refresh),
+    ];
+    return () => {
+      disposers.forEach((dispose) => dispose?.());
+    };
+  }, [hasActiveFilter, refreshFilteredHistory]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const generation = ++queryGeneration.current;
+    setHasLoadedSummary(false);
+    setQueryError(false);
+    setIsFetchingMore(false);
+    if (hasActiveFilter) setFilteredHistory([]);
+    const timer = window.setTimeout(
+      async () => {
+        const api = window.electronAPI?.queryTranscriptionHistory;
+        if (!api) return;
+
+        setIsQueryLoading(true);
+        try {
+          const page = await api({ ...historyQuery, limit: HISTORY_PAGE_SIZE, offset: 0 });
+          if (cancelled || queryGeneration.current !== generation) return;
+          setFilteredHistory(page.items);
+          setHistorySummary({ totalEntries: page.totalEntries, totalWords: page.totalWords });
+          setHasLoadedSummary(true);
+        } catch {
+          if (!cancelled && queryGeneration.current === generation) setQueryError(true);
+        } finally {
+          if (!cancelled && queryGeneration.current === generation) setIsQueryLoading(false);
+        }
+      },
+      hasActiveFilter ? 180 : 0
+    );
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [hasActiveFilter, history, historyQuery, queryRefreshVersion]);
+
+  const loadMoreFilteredHistory = useCallback(async () => {
+    const api = window.electronAPI?.queryTranscriptionHistory;
+    if (!api || isFetchingMore || filteredHistory.length >= historySummary.totalEntries) return;
+
+    const generation = queryGeneration.current;
+    setIsFetchingMore(true);
+    try {
+      const page = await api({
+        ...historyQuery,
+        limit: HISTORY_PAGE_SIZE,
+        offset: filteredHistory.length,
+      });
+      if (queryGeneration.current !== generation) return;
+      setFilteredHistory((current) => {
+        const knownIds = new Set(current.map((item) => item.id));
+        return [...current, ...page.items.filter((item) => !knownIds.has(item.id))];
+      });
+      setHistorySummary({ totalEntries: page.totalEntries, totalWords: page.totalWords });
+    } catch {
+      if (queryGeneration.current === generation) setQueryError(true);
+    } finally {
+      if (queryGeneration.current === generation) setIsFetchingMore(false);
+    }
+  }, [filteredHistory.length, historyQuery, historySummary.totalEntries, isFetchingMore]);
+
+  const exportFilteredHistory = useCallback(
+    async (format: "txt" | "json") => {
+      const api = window.electronAPI?.exportTranscriptionHistory;
+      if (!api || exportingFormat) return;
+
+      setExportingFormat(format);
+      setExportError(null);
+      try {
+        const result = await api(historyQuery, format);
+        if (!result.success && result.error) setExportError(result.error);
+      } catch {
+        setExportError(t("controlPanel.history.exportFailed"));
+      } finally {
+        setExportingFormat(null);
+      }
+    },
+    [exportingFormat, historyQuery, t]
+  );
+
+  const displayedHistory = hasActiveFilter ? filteredHistory : history;
 
   const groupedHistory = useMemo(() => {
-    if (history.length === 0) return [];
+    if (displayedHistory.length === 0) return [];
 
     const groups: { label: string; items: TranscriptionItemType[] }[] = [];
     let currentLabel: string | null = null;
 
-    for (const item of history) {
+    for (const item of displayedHistory) {
       const label = formatDateGroup(item.timestamp, t);
 
       if (label !== currentLabel) {
@@ -76,11 +201,14 @@ export default function HistoryView({
     }
 
     return groups;
-  }, [history, t]);
+  }, [displayedHistory, t]);
 
   const discardedToggle = (
     <button
-      onClick={onToggleDiscarded}
+      onClick={() => {
+        queryGeneration.current += 1;
+        onToggleDiscarded();
+      }}
       className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] text-muted-foreground/60 hover:!text-foreground hover:!bg-black/5 dark:hover:!bg-white/5 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/30 transition-all duration-200"
     >
       <Archive size={11} />
@@ -95,7 +223,9 @@ export default function HistoryView({
   return (
     <div className="px-4 pt-4 pb-6">
       <div className="mx-auto max-w-5xl">
-        {history.length === 0 && <div className="mb-2 flex justify-end">{discardedToggle}</div>}
+        {history.length === 0 && !hasActiveFilter && (
+          <div className="mb-2 flex justify-end">{discardedToggle}</div>
+        )}
         {showCloudMigrationBanner && (
           <div className="mb-3 relative rounded-lg border border-primary/20 bg-primary/5 dark:bg-primary/10 p-3">
             <button
@@ -180,6 +310,111 @@ export default function HistoryView({
                 {t("upcoming.transcriptions")}
               </span>
             </div>
+            <div className="mb-3 rounded-lg border border-border/60 bg-card/40 p-2.5 dark:bg-surface-2/40">
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="relative min-w-[12rem] flex-1">
+                  <span className="sr-only">{t("controlPanel.history.searchLabel")}</span>
+                  <Search
+                    size={14}
+                    aria-hidden="true"
+                    className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground"
+                  />
+                  <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(event) => {
+                      queryGeneration.current += 1;
+                      setSearchQuery(event.target.value);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape" && searchQuery) {
+                        queryGeneration.current += 1;
+                        setSearchQuery("");
+                      }
+                    }}
+                    placeholder={t("controlPanel.history.searchPlaceholder")}
+                    aria-label={t("controlPanel.history.searchLabel")}
+                    className="h-8 w-full rounded border border-border/60 bg-background pl-8 pr-2.5 text-xs text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 dark:bg-surface-1"
+                  />
+                </label>
+                <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className="sr-only">{t("controlPanel.history.dateFilterLabel")}</span>
+                  <select
+                    value={dateFilter}
+                    onChange={(event) => {
+                      queryGeneration.current += 1;
+                      setDateFilter(event.target.value as HistoryDateFilter);
+                    }}
+                    aria-label={t("controlPanel.history.dateFilterLabel")}
+                    className="h-8 rounded border border-border/60 bg-background px-2 text-xs text-foreground outline-none focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/15 dark:bg-surface-1"
+                  >
+                    <option value="all">{t("controlPanel.history.allDates")}</option>
+                    <option value="today">{t("controlPanel.history.today")}</option>
+                    <option value="last7Days">{t("controlPanel.history.last7Days")}</option>
+                    <option value="last30Days">{t("controlPanel.history.last30Days")}</option>
+                  </select>
+                </label>
+                <div className="ml-auto flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5 px-2 text-xs"
+                    disabled={
+                      !hasLoadedSummary || historySummary.totalEntries === 0 || !!exportingFormat
+                    }
+                    onClick={() => exportFilteredHistory("txt")}
+                  >
+                    <Download size={13} aria-hidden="true" />
+                    {t("controlPanel.history.exportText")}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5 px-2 text-xs"
+                    disabled={
+                      !hasLoadedSummary || historySummary.totalEntries === 0 || !!exportingFormat
+                    }
+                    onClick={() => exportFilteredHistory("json")}
+                  >
+                    <Download size={13} aria-hidden="true" />
+                    {t("controlPanel.history.exportJson")}
+                  </Button>
+                </div>
+              </div>
+              <div
+                aria-live="polite"
+                className="mt-2 flex min-h-4 items-center justify-between gap-2 text-[11px] text-muted-foreground"
+              >
+                {hasLoadedSummary ? (
+                  <span>
+                    {hasActiveFilter
+                      ? t("controlPanel.history.matchingUsage", {
+                          entries: historySummary.totalEntries,
+                          words: historySummary.totalWords,
+                        })
+                      : t("controlPanel.history.usage", {
+                          entries: historySummary.totalEntries,
+                          words: historySummary.totalWords,
+                        })}
+                  </span>
+                ) : (
+                  <span>{isQueryLoading ? t("controlPanel.loading") : ""}</span>
+                )}
+                {hasActiveFilter && hasLoadedSummary && (
+                  <span>{t("controlPanel.history.searchScope")}</span>
+                )}
+              </div>
+              {exportError && (
+                <p className="mt-1 text-[11px] text-destructive" role="status">
+                  {t("controlPanel.history.exportFailed")}: {exportError}
+                </p>
+              )}
+              {queryError && (
+                <p className="mt-1 text-[11px] text-destructive" role="status">
+                  {t("controlPanel.history.searchFailed")}
+                </p>
+              )}
+            </div>
             {!dataRetentionEnabled && (
               <div className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 dark:bg-amber-500/10 px-3.5 py-2.5 flex items-center gap-2.5">
                 <span className="text-amber-600 dark:text-amber-400 shrink-0 text-sm">⊘</span>
@@ -188,14 +423,15 @@ export default function HistoryView({
                 </p>
               </div>
             )}
-            {isLoading && history.length === 0 ? (
+            {(isLoading && history.length === 0 && !hasActiveFilter) ||
+            (hasActiveFilter && isQueryLoading && filteredHistory.length === 0) ? (
               <div className="rounded-lg border border-border bg-card/50 dark:bg-card/60 backdrop-blur-sm">
                 <div className="flex items-center justify-center gap-2 py-8">
                   <Loader2 size={14} className="animate-spin text-primary" />
                   <span className="text-sm text-muted-foreground">{t("controlPanel.loading")}</span>
                 </div>
               </div>
-            ) : history.length === 0 ? (
+            ) : displayedHistory.length === 0 ? (
               <div className="rounded-lg border border-border bg-card/50 dark:bg-card/60 backdrop-blur-sm">
                 <div className="flex flex-col items-center justify-center py-16 px-4">
                   <svg
@@ -283,20 +519,26 @@ export default function HistoryView({
                     />
                   </svg>
                   <h3 className="text-xs font-semibold text-foreground/70 dark:text-foreground/60 mb-2">
-                    {t("controlPanel.history.empty")}
+                    {t(
+                      hasActiveFilter
+                        ? "controlPanel.history.noMatches"
+                        : "controlPanel.history.empty"
+                    )}
                   </h3>
-                  <div className="flex items-center gap-2 text-xs text-foreground/50 dark:text-foreground/25">
-                    <span>{t("controlPanel.history.press")}</span>
-                    {parseHotkeyList(hotkey).map((hk, index) => (
-                      <Fragment key={hk}>
-                        {index > 0 && <span className="text-foreground/30">/</span>}
-                        <kbd className="inline-flex items-center h-5 px-1.5 rounded-sm bg-surface-1 dark:bg-white/6 border border-border/50 text-xs font-mono font-medium text-foreground/60 dark:text-foreground/40">
-                          {formatHotkeyLabel(hk)}
-                        </kbd>
-                      </Fragment>
-                    ))}
-                    <span>{t("controlPanel.history.toStart")}</span>
-                  </div>
+                  {!hasActiveFilter && (
+                    <div className="flex items-center gap-2 text-xs text-foreground/50 dark:text-foreground/25">
+                      <span>{t("controlPanel.history.press")}</span>
+                      {parseHotkeyList(hotkey).map((hk, index) => (
+                        <Fragment key={hk}>
+                          {index > 0 && <span className="text-foreground/30">/</span>}
+                          <kbd className="inline-flex items-center h-5 px-1.5 rounded-sm bg-surface-1 dark:bg-white/6 border border-border/50 text-xs font-mono font-medium text-foreground/60 dark:text-foreground/40">
+                            {formatHotkeyLabel(hk)}
+                          </kbd>
+                        </Fragment>
+                      ))}
+                      <span>{t("controlPanel.history.toStart")}</span>
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (
@@ -335,6 +577,20 @@ export default function HistoryView({
                     </div>
                   </div>
                 ))}
+                {hasActiveFilter && filteredHistory.length < historySummary.totalEntries && (
+                  <div className="flex justify-center pt-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 text-xs"
+                      disabled={isFetchingMore}
+                      onClick={loadMoreFilteredHistory}
+                    >
+                      {isFetchingMore && <Loader2 size={13} className="mr-1.5 animate-spin" />}
+                      {t("controlPanel.history.loadMore")}
+                    </Button>
+                  </div>
+                )}
               </div>
             )}
           </div>

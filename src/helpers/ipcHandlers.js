@@ -108,6 +108,8 @@ const { downsample24kTo16k, pcm16ToWav } = require("../utils/audioUtils");
 const postMigrationDetector = require("./postMigrationDetector");
 const screenContextCapture = require("./screenContextCapture");
 const { shouldRestoreClipboardAfterDictation } = require("./dictationPastePolicy");
+const { bindInferenceLeaseOwner } = require("./inferenceLeaseOwner");
+const { speculativeCleanup } = require("./speculativeCleanup");
 const DICTATION_STREAM_FINISH_IDLE_TIMEOUT_MS = 2500;
 const {
   DEFAULT_EXPECTED_SPEAKER_COUNT,
@@ -1329,9 +1331,14 @@ class IPCHandlers {
     });
 
     ipcMain.handle("capture-dictation-target", async () => {
-      const pid = (await this.textEditMonitor?.captureTargetPid?.()) ?? null;
+      const target = (await this.textEditMonitor?.captureTargetApp?.()) ?? null;
       await this.selectionManager?.captureTarget?.();
-      return { success: true, pid };
+      return {
+        success: true,
+        pid: target?.pid ?? null,
+        bundleId: target?.bundleId ?? null,
+        appName: target?.appName ?? null,
+      };
     });
 
     ipcMain.handle("force-stop-dictation", () => {
@@ -1384,6 +1391,43 @@ class IPCHandlers {
 
     ipcMain.handle("db-get-transcriptions", async (event, limit = 50, options = {}) => {
       return this.databaseManager.getTranscriptions(limit, options);
+    });
+
+    ipcMain.handle("db-query-transcription-history", async (_event, options = {}) => {
+      return this.databaseManager.getTranscriptionHistoryPage(options);
+    });
+
+    ipcMain.handle("export-transcription-history", async (_event, options = {}, format) => {
+      try {
+        if (format !== "txt" && format !== "json") {
+          return { success: false, error: "Unsupported export format" };
+        }
+
+        const { dialog } = require("electron");
+        const fs = require("fs");
+        const isJson = format === "json";
+        const extension = isJson ? "json" : "txt";
+        const result = await dialog.showSaveDialog({
+          defaultPath: `openwhispr-history.${extension}`,
+          filters: [{ name: isJson ? "JSON" : "Text", extensions: [extension] }],
+        });
+
+        if (result.canceled || !result.filePath) return { success: false };
+
+        const entries = this.databaseManager.getTranscriptionHistoryForExport(options);
+        const content = isJson
+          ? JSON.stringify(entries, null, 2)
+          : entries.map((entry) => `[${entry.timestamp}]\n${entry.text || ""}`).join("\n\n");
+        fs.writeFileSync(result.filePath, content, "utf-8");
+        return { success: true, count: entries.length };
+      } catch (error) {
+        debugLogger.error(
+          "Error exporting transcription history",
+          { error: error.message },
+          "history"
+        );
+        return { success: false, error: "Unable to export history" };
+      }
     });
 
     ipcMain.handle("db-clear-transcriptions", async (event) => {
@@ -2649,6 +2693,10 @@ class IPCHandlers {
         Number.isInteger(targetPid) &&
         targetPid > 0 &&
         !!this.clipboardManager.resolveFastPasteBinary?.();
+      // Submit never has a generic-focus fallback. When a captured target or
+      // native helper is absent, ordinary paste keeps its existing behavior and
+      // reports that no Return was emitted.
+      const requestSubmit = options?.submit === true && useTargetedFastPaste;
 
       // Activating the target by PID is more reliable than hide()'s implicit
       // focus hand-off for Chromium apps like Claude desktop and Brave (#668).
@@ -2704,7 +2752,7 @@ class IPCHandlers {
           ? ((await this.selectionManager?.getWinTargetHwnd?.()) ?? null)
           : null;
 
-      await this.clipboardManager.pasteText(textToPaste, {
+      const pasteResult = await this.clipboardManager.pasteText(textToPaste, {
         ...options,
         restoreClipboard: shouldRestoreClipboardAfterDictation({
           platform: process.platform,
@@ -2714,6 +2762,7 @@ class IPCHandlers {
         webContents: event.sender,
         targetWindow,
         ...(useTargetedFastPaste ? { targetPid } : {}),
+        ...(requestSubmit ? { submit: true } : {}),
       });
       debugLogger.debug("[AutoLearn] Paste completed", {
         autoLearnEnabled: this._autoLearnEnabled,
@@ -2736,7 +2785,11 @@ class IPCHandlers {
       // serialize subsequent clipboard work behind its delayed restore. A
       // Promise cannot cross Electron's IPC boundary, though, and renderer
       // callers only need to know that the paste was accepted.
-      return { success: true };
+      return {
+        success: true,
+        submitted: pasteResult?.submitted === true,
+        ...(pasteResult?.submissionCode ? { submissionCode: pasteResult.submissionCode } : {}),
+      };
     });
 
     ipcMain.handle("check-accessibility-permission", async (_event, silent = false) => {
@@ -2977,18 +3030,12 @@ class IPCHandlers {
           }
           if (purpose === "intelligence") {
             const modelManager = require("./modelManagerBridge").default;
-            if (modelManager.serverManager?.process) {
-              debugLogger.info(
-                "Restarting llama-server for GPU change",
-                { from: oldUuid, to: uuid },
-                "gpu"
-              );
-              const modelId = modelManager.currentServerModelId;
-              await modelManager.serverManager.stop();
-              if (modelId) {
-                await modelManager.prewarmServer(modelId);
-              }
-            }
+            debugLogger.info(
+              "Restarting llama-server for GPU change",
+              { from: oldUuid, to: uuid },
+              "gpu"
+            );
+            await modelManager.restartServer();
           }
         } catch (err) {
           debugLogger.error(
@@ -4686,26 +4733,60 @@ class IPCHandlers {
       }
     });
 
-    ipcMain.handle("llama-server-start", async (event, modelId) => {
+    const bindLlamaInferenceLeaseOwner = (sender) => {
+      bindInferenceLeaseOwner(sender, (ownerId, reason) => {
+        const modelManager = require("./modelManagerBridge").default;
+        return modelManager.releaseExternalInferenceLeasesForOwner(ownerId, reason);
+      });
+    };
+
+    ipcMain.handle("llama-server-start", async (_event, modelId) => {
       try {
         const modelManager = require("./modelManagerBridge").default;
-        await modelManager.waitForPromptWarmup();
-        modelManager.ensureInitialized();
-        const modelInfo = modelManager.findModelById(modelId);
-        if (!modelInfo) {
-          return { success: false, error: `Model "${modelId}" not found` };
+        const port = await modelManager.startServer(modelId);
+        this.environmentManager.saveAllKeysToEnvFile().catch(() => {});
+        return { success: true, port };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("llama-inference-lease-begin", async (event, modelId) => {
+      try {
+        bindLlamaInferenceLeaseOwner(event.sender);
+        await speculativeCleanup.interrupt("external-inference");
+        if (event.sender.isDestroyed()) {
+          return { success: false, error: "Renderer closed before local inference started" };
         }
 
-        const modelPath = require("path").join(modelManager.modelsDir, modelInfo.model.fileName);
-
-        await modelManager.serverManager.start(
-          modelPath,
-          await modelManager.serverStartOptions(modelInfo)
-        );
-        modelManager.currentServerModelId = modelId;
+        const modelManager = require("./modelManagerBridge").default;
+        const result = await modelManager.beginExternalInferenceLease(modelId, event.sender.id);
+        if (event.sender.isDestroyed()) {
+          await modelManager.releaseExternalInferenceLease(
+            result.leaseToken,
+            event.sender.id,
+            "owner-gone"
+          );
+          return { success: false, error: "Renderer closed before local inference started" };
+        }
 
         this.environmentManager.saveAllKeysToEnvFile().catch(() => {});
-        return { success: true, port: modelManager.serverManager.port };
+        return { success: true, ...result };
+      } catch (error) {
+        return { success: false, error: error.message };
+      }
+    });
+
+    ipcMain.handle("llama-inference-lease-end", async (event, leaseToken) => {
+      try {
+        const modelManager = require("./modelManagerBridge").default;
+        const released = await modelManager.releaseExternalInferenceLease(
+          leaseToken,
+          event.sender.id
+        );
+        return released
+          ? { success: true }
+          : { success: false, error: "Lease is not owned by this renderer" };
       } catch (error) {
         return { success: false, error: error.message };
       }
@@ -4733,15 +4814,7 @@ class IPCHandlers {
     ipcMain.handle("llama-gpu-reset", async () => {
       try {
         const modelManager = require("./modelManagerBridge").default;
-        const previousModelId = modelManager.currentServerModelId;
-        modelManager.serverManager.resetGpuDetection();
-        await modelManager.stopServer();
-
-        // Restart server with previous model so Vulkan binary is picked up
-        if (previousModelId) {
-          modelManager.prewarmServer(previousModelId).catch(() => {});
-        }
-
+        await modelManager.resetGpuAndRestart();
         return { success: true };
       } catch (error) {
         return { success: false, error: error.message };
@@ -7167,6 +7240,7 @@ class IPCHandlers {
     let dictationPreviewLanguage = null;
     let dictationPreviewSessionActive = false;
     let dictationPreviewChunkCount = 0;
+    let dictationPreviewTranscript = "";
     // Online-runtime models stream here instead of the 1.5s chunked path.
     let dictationPreviewStream = null;
     // false = headless streaming session (commit-only, no preview window).
@@ -7187,7 +7261,10 @@ class IPCHandlers {
       return result;
     };
 
-    const resetDictationPreviewState = ({ preserveSession = false } = {}) => {
+    const resetDictationPreviewState = ({
+      preserveSession = false,
+      preserveSpeculation = false,
+    } = {}) => {
       dictationPreviewGen++;
       if (dictationPreviewTimer) {
         clearInterval(dictationPreviewTimer);
@@ -7207,6 +7284,8 @@ class IPCHandlers {
       dictationPreviewModel = null;
       dictationPreviewLanguage = null;
       dictationPreviewDisplay = true;
+      dictationPreviewTranscript = "";
+      if (!preserveSpeculation) speculativeCleanup.cancel("preview-reset");
     };
 
     const startDictationPreviewTimer = () => {
@@ -7221,7 +7300,20 @@ class IPCHandlers {
       if (dictationPreviewTranscribing) return;
       if (!dictationPreviewBuffer.length) return;
 
-      dictationPreviewTranscribing = true;
+      const chunkSession = {
+        gen: dictationPreviewGen,
+        provider: dictationPreviewProvider,
+        model: dictationPreviewModel,
+        language: dictationPreviewLanguage,
+      };
+      const transcriptionToken = {};
+      const sessionIsCurrent = () =>
+        dictationPreviewTranscribing === transcriptionToken &&
+        dictationPreviewGen === chunkSession.gen &&
+        dictationPreviewProvider === chunkSession.provider &&
+        dictationPreviewModel === chunkSession.model &&
+        dictationPreviewLanguage === chunkSession.language;
+      dictationPreviewTranscribing = transcriptionToken;
       try {
         const pcm = Buffer.concat(dictationPreviewBuffer);
         dictationPreviewBuffer = [];
@@ -7243,34 +7335,43 @@ class IPCHandlers {
         const wav = pcm16ToWav(pcm);
 
         let result;
-        if (dictationPreviewProvider === "nvidia") {
+        if (chunkSession.provider === "nvidia") {
           result = await this.parakeetManager.transcribeLocalParakeet(wav, {
-            model: dictationPreviewModel,
+            model: chunkSession.model,
           });
         } else {
           const vadOptions = this._resolveWhisperVadOptions("dictation");
           result = await this.whisperManager.transcribeLocalWhisper(wav, {
-            model: dictationPreviewModel,
-            language: dictationPreviewLanguage,
+            model: chunkSession.model,
+            language: chunkSession.language,
             ...vadOptions,
           });
         }
 
+        if (!sessionIsCurrent()) return;
         if (result?.success && result.text?.trim()) {
-          this.windowManager.appendTranscriptionPreview(result.text.trim());
+          const text = result.text.trim();
+          dictationPreviewTranscript = dictationPreviewTranscript
+            ? `${dictationPreviewTranscript} ${text}`
+            : text;
+          speculativeCleanup.update(dictationPreviewTranscript);
+          this.windowManager.appendTranscriptionPreview(text);
         } else if (result && !result.success) {
           debugLogger.warn("Dictation preview chunk returned failure", {
             error: result.error || result.message,
-            provider: dictationPreviewProvider,
+            provider: chunkSession.provider,
           });
         }
       } catch (error) {
+        if (!sessionIsCurrent()) return;
         debugLogger.error("Dictation preview transcription chunk failed", {
           error: error.message,
-          provider: dictationPreviewProvider,
+          provider: chunkSession.provider,
         });
       } finally {
-        dictationPreviewTranscribing = false;
+        if (dictationPreviewTranscribing === transcriptionToken) {
+          dictationPreviewTranscribing = false;
+        }
       }
     };
 
@@ -8031,7 +8132,17 @@ class IPCHandlers {
 
     ipcMain.handle(
       "start-dictation-preview",
-      async (_event, { provider, model, language, display = true }) => {
+      async (
+        _event,
+        {
+          provider,
+          model,
+          language,
+          display = true,
+          speculativeCleanup: enableSpeculation = false,
+          speculativeCleanupPayload = null,
+        }
+      ) => {
         resetDictationPreviewState();
         const gen = dictationPreviewGen;
         dictationPreviewMode = true;
@@ -8048,7 +8159,38 @@ class IPCHandlers {
         // server; this runs beside speech capture and restores the exact
         // cleanup prompt before the user stops talking.
         const modelManager = require("./modelManagerBridge").default;
-        void modelManager.prewarmLatestPrompt().catch((error) => {
+        const LocalReasoningService = require("../services/localReasoningBridge").default;
+        const suppliedWarmPayload =
+          enableSpeculation === true &&
+          typeof speculativeCleanupPayload?.modelId === "string" &&
+          typeof speculativeCleanupPayload?.systemPrompt === "string" &&
+          typeof speculativeCleanupPayload?.userPrompt === "string"
+            ? {
+                modelId: speculativeCleanupPayload.modelId,
+                systemPrompt: speculativeCleanupPayload.systemPrompt,
+                userPrompt: speculativeCleanupPayload.userPrompt,
+                disableThinking: speculativeCleanupPayload.disableThinking !== false,
+                cacheKey:
+                  typeof speculativeCleanupPayload.cacheKey === "string"
+                    ? speculativeCleanupPayload.cacheKey
+                    : "",
+              }
+            : null;
+        const warmPayload = suppliedWarmPayload
+          ? suppliedWarmPayload
+          : modelManager.promptWarmPayload
+            ? { ...modelManager.promptWarmPayload }
+            : null;
+        speculativeCleanup.startSession({
+          enabled: enableSpeculation === true && !!warmPayload,
+          prepare: warmPayload
+            ? (text) => LocalReasoningService.createSpeculativeCleanupRequest(text, warmPayload)
+            : null,
+        });
+        const prewarm = suppliedWarmPayload
+          ? modelManager.prewarmPrompt(suppliedWarmPayload)
+          : modelManager.prewarmLatestPrompt();
+        void prewarm.catch((error) => {
           debugLogger.debug("Recording-start cleanup pre-warm failed (non-fatal)", {
             error: error.message,
           });
@@ -8058,8 +8200,10 @@ class IPCHandlers {
           try {
             const stream = await this.parakeetManager.createOnlineStream(model, {
               onUpdate: (text) => {
-                if (gen === dictationPreviewGen && text && dictationPreviewDisplay) {
-                  this.windowManager.showTranscriptionPreview(text);
+                if (gen === dictationPreviewGen && text) {
+                  dictationPreviewTranscript = text;
+                  speculativeCleanup.update(text);
+                  if (dictationPreviewDisplay) this.windowManager.showTranscriptionPreview(text);
                 }
               },
               onError: (error) => {
@@ -8140,6 +8284,8 @@ class IPCHandlers {
           dictationPreviewSessionActive = true;
           dictationPreviewDisplay = true;
         }
+        dictationPreviewTranscript = text.trim();
+        speculativeCleanup.update(dictationPreviewTranscript);
         await this.windowManager.showTranscriptionPreview(text);
         return { success: true };
       })
@@ -8147,6 +8293,11 @@ class IPCHandlers {
 
     ipcMain.handle("complete-dictation-preview", (_event, { text } = {}) =>
       queueDictationPreviewOperation(async () => {
+        // Headless online-stream stops intentionally clear the visible-session
+        // flag while preserving speculation for foreground reconciliation. If
+        // routing changes and no cleanup request follows, completion is the
+        // last lifecycle signal and must still discard that background work.
+        speculativeCleanup.cancel("preview-completed");
         if (!dictationPreviewSessionActive) {
           return { success: true };
         }
@@ -8201,13 +8352,17 @@ class IPCHandlers {
           // Trust the streamed transcript only on a clean server flush and a clean renderer flush.
           streamed = !result.truncated && rendererFlushOk;
         }
+        if (streamedText) {
+          dictationPreviewTranscript = streamedText;
+          speculativeCleanup.update(streamedText);
+        }
         if (streamedText && display && dictationPreviewSessionActive) {
           this.windowManager.showTranscriptionPreview(streamedText);
         }
       } else {
         await transcribeDictationPreviewChunk();
       }
-      resetDictationPreviewState({ preserveSession: display });
+      resetDictationPreviewState({ preserveSession: display, preserveSpeculation: true });
       if (!display || !dictationPreviewSessionActive) {
         return { success: true, streamed, text: streamedText };
       }

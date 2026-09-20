@@ -979,6 +979,9 @@ class ClipboardManager {
     const useFastPaste = !!fastPasteBinary;
     const targetedFastPaste =
       useFastPaste && Number.isInteger(options.targetPid) && options.targetPid > 0;
+    // A Return event is available only through the native PID-addressed path.
+    // Never let a requested submit fall through to focused-app AppleScript.
+    const requestSubmit = options.submit === true && targetedFastPaste;
     const pasteDelay = targetedFastPaste
       ? 0
       : options.fromStreaming
@@ -990,6 +993,7 @@ class ClipboardManager {
     return new Promise((resolve, reject) => {
       setTimeout(() => {
         const pasteArgs = targetedFastPaste ? ["--target-pid", String(options.targetPid)] : [];
+        if (requestSubmit) pasteArgs.push("--submit");
         const pasteProcess = useFastPaste
           ? spawn(fastPasteBinary, pasteArgs)
           : spawn("osascript", [
@@ -998,8 +1002,12 @@ class ClipboardManager {
             ]);
 
         let errorOutput = "";
+        let standardOutput = "";
         let hasTimedOut = false;
 
+        pasteProcess.stdout?.on("data", (data) => {
+          standardOutput += data.toString();
+        });
         pasteProcess.stderr.on("data", (data) => {
           errorOutput += data.toString();
         });
@@ -1011,15 +1019,25 @@ class ClipboardManager {
 
           if (code === 0) {
             this.safeLog(`Text pasted successfully via ${useFastPaste ? "CGEvent" : "osascript"}`);
+            const submitted = requestSubmit && /PASTE_OK \d+ SUBMITTED/.test(standardOutput);
+            const skippedSubmission = requestSubmit && !submitted;
+            const submissionCode = skippedSubmission
+              ? (standardOutput.match(/SUBMIT_SKIPPED ([^\s]+)/)?.[1] ?? "not_submitted")
+              : undefined;
+            const submissionResult = {
+              submitted,
+              ...(submissionCode ? { submissionCode } : {}),
+            };
             if (originalClipboard != null) {
               resolve({
                 restoreComplete: this._restoreClipboardAfterDelay(originalClipboard, {
                   delayMs: RESTORE_DELAYS.darwin,
                   expectedText: options.expectedClipboardText,
                 }),
+                ...submissionResult,
               });
             } else {
-              resolve({ restoreComplete: Promise.resolve() });
+              resolve({ restoreComplete: Promise.resolve(), ...submissionResult });
             }
           } else if (useFastPaste && !targetedFastPaste) {
             this.safeLog(

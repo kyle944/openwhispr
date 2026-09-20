@@ -13,6 +13,7 @@ import {
 import {
   createLocalSpeechGateState,
   getLocalSpeechGateDecision,
+  measureFloatSpeechWindow,
   recordLocalSpeechWindow,
 } from "./localSpeechGate";
 import { reacquireIfDead } from "./micTrackHealth";
@@ -79,7 +80,12 @@ import {
   resolveDictationAgentVisionInference,
 } from "./dictationAgentInference";
 import { resolveDictationTranslationInference } from "./dictationTranslationInference";
-import { resolvePrompt, appendScreenContextSuffix } from "../config/prompts";
+import {
+  resolvePrompt,
+  appendScreenContextSuffix,
+  getCleanupSystemPrompt,
+  wrapCleanupTranscript,
+} from "../config/prompts";
 import { hasLearnedCorrectionExamples } from "../utils/learnedCorrectionExamples";
 import { syncService } from "../services/SyncService.js";
 import { evaluateFinishedRecording, withSalvageWarning } from "./recordingValidation";
@@ -89,9 +95,14 @@ import {
   dictionaryEchoError,
   matchesDictionaryPrompt,
 } from "../utils/dictionaryEchoFilter.js";
-import { getDictionaryHintWords } from "../utils/snippets";
+import { expandFinalDictationSnippets, getDictionaryHintWords } from "../utils/snippets";
 import { normalizeAgentSelectionContext } from "../utils/agentSelectionContext";
 import { shouldDisplayDictationPreview } from "../utils/transcriptionPreview";
+import { getCleanupFormattingFingerprint } from "../utils/writingPreferences";
+import {
+  normalizeDictationTargetApp,
+  resolvePerAppWritingPreferences,
+} from "../utils/perAppWritingStyles";
 import {
   buildSelectionEditSystemPrompt,
   buildSelectionEditUserPrompt,
@@ -165,11 +176,29 @@ function resolveReasoningRoute(
   voiceAgentRequested,
   translationRequested,
   screenContext,
-  detectedLanguage
+  detectedLanguage,
+  dictationTargetApp = null
 ) {
   const cleanup = selectResolvedLLMConfig(settings, "dictationCleanup");
+  const localCleanup = cleanup.mode === "local";
+  const effectiveWritingPreferences = resolvePerAppWritingPreferences(
+    settings,
+    settings.perAppWritingStyles,
+    localCleanup ? dictationTargetApp : null
+  );
+  const cleanupSystemPrompt = getCleanupSystemPrompt(
+    agentName,
+    getDictionaryHintWords(settings),
+    resolveCleanupLanguage(settings.preferredLanguage),
+    settings.uiLanguage,
+    effectiveWritingPreferences
+  );
+  const cleanupFormattingFingerprint = getCleanupFormattingFingerprint(effectiveWritingPreferences);
+  const cleanupEnabled = settings.cleanupIntensity !== "none";
   const cleanupReachable =
-    !!settings.useCleanupModel && (!!cleanup.model?.trim() || isCloudCleanupMode());
+    cleanupEnabled &&
+    !!settings.useCleanupModel &&
+    (!!cleanup.model?.trim() || isCloudCleanupMode());
   const agent = resolveDictationAgentInference(settings, {
     isCloudAgent: isCloudDictationAgentMode(),
   });
@@ -218,6 +247,12 @@ function resolveReasoningRoute(
       cleanupConfig: {
         inferenceScope: /** @type {const} */ ("dictationCleanup"),
         disableThinking: settings.cleanupDisableThinking,
+        ...(localCleanup
+          ? {
+              systemPrompt: cleanupSystemPrompt,
+              speculativeCleanupCacheKey: cleanupFormattingFingerprint,
+            }
+          : {}),
       },
       config: {
         ...translation.config,
@@ -277,6 +312,12 @@ function resolveReasoningRoute(
       config: {
         inferenceScope: /** @type {const} */ ("dictationCleanup"),
         disableThinking: settings.cleanupDisableThinking,
+        ...(localCleanup
+          ? {
+              systemPrompt: cleanupSystemPrompt,
+              speculativeCleanupCacheKey: cleanupFormattingFingerprint,
+            }
+          : {}),
       },
     };
   }
@@ -417,6 +458,7 @@ class AudioManager {
     this.onError = null;
     this.onTranscriptionComplete = null;
     this.onPartialTranscript = null;
+    this.dictationTargetApp = null;
     this.micCaptureStatus = "inactive";
     this.cachedApiKey = null;
     this.cachedApiKeyProvider = null;
@@ -521,7 +563,7 @@ class AudioManager {
     this.lastAudioMetadata = null;
     this._localSpeechGateState = null;
     this._streamingCommitActive = false;
-    this._previewFlushResolve = null;
+    this._previewFlushResolvers = new WeakMap();
     this._batchSegments = [];
     this._rotatingBatchRecorder = null;
     this._rotationResolve = null;
@@ -747,6 +789,10 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     // Same for a prefetched selection: bounded to one recording, so a read taken
     // in an earlier app can never be edited in place by this command.
     this.selectionCapturePromise = null;
+  }
+
+  setDictationTargetApp(target) {
+    this.dictationTargetApp = normalizeDictationTargetApp(target);
   }
 
   setAssistantSelectionContext(context) {
@@ -1196,24 +1242,35 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         }
         this._silenceAnalyser = this._silenceCtx.createAnalyser();
         this._silenceAnalyser.fftSize = 2048;
+        if (typeof this._silenceAnalyser.getFloatTimeDomainData !== "function") {
+          throw new Error("Float time-domain microphone samples are unavailable");
+        }
         this._silenceSource = this._silenceCtx.createMediaStreamSource(micStream);
         this._silenceSource.connect(this._silenceAnalyser);
         this._localSpeechGateState = createLocalSpeechGateState();
-        const dataArray = new Uint8Array(this._silenceAnalyser.fftSize);
+        const dataArray = new Float32Array(this._silenceAnalyser.fftSize);
         this._silenceInterval = setInterval(() => {
           // A stalled context reads flat silence; recording no windows fails the gate open.
           if (this._silenceCtx?.state !== "running") return;
-          this._silenceAnalyser.getByteTimeDomainData(dataArray);
-          let sum = 0;
-          let peak = 0;
-          for (let i = 0; i < dataArray.length; i++) {
-            const v = (dataArray[i] - 128) / 128;
-            sum += v * v;
-            const abs = Math.abs(v);
-            if (abs > peak) peak = abs;
+          try {
+            this._silenceAnalyser.getFloatTimeDomainData(dataArray);
+            const metrics = measureFloatSpeechWindow(dataArray);
+            if (metrics) {
+              recordLocalSpeechWindow(this._localSpeechGateState, metrics.rms, metrics.peak);
+            }
+          } catch (error) {
+            // Sampling support can disappear with a failed audio device/context.
+            // Disable the gate so the recording is decoded instead of trusting
+            // stale or low-resolution measurements.
+            logger.warn(
+              "Float audio level sampling failed, skipping gate",
+              { error: error.message },
+              "audio"
+            );
+            this._localSpeechGateState = null;
+            clearInterval(this._silenceInterval);
+            this._silenceInterval = null;
           }
-          const rms = Math.sqrt(sum / dataArray.length);
-          recordLocalSpeechWindow(this._localSpeechGateState, rms, peak);
         }, 100);
       } catch (e) {
         logger.warn("Audio level gate setup failed, skipping", { error: e.message }, "audio");
@@ -1256,13 +1313,31 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         "audio"
       );
 
+      const settings = getSettings();
       const {
         showTranscriptionPreview,
         useLocalWhisper,
         localTranscriptionProvider,
         whisperModel,
         parakeetModel,
-      } = getSettings();
+      } = settings;
+      const effectiveWritingPreferences = resolvePerAppWritingPreferences(
+        settings,
+        settings.perAppWritingStyles,
+        this.dictationTargetApp
+      );
+      const cleanupFormattingFingerprint = getCleanupFormattingFingerprint(
+        effectiveWritingPreferences
+      );
+      const cleanupSystemPrompt = getCleanupSystemPrompt(
+        typeof window !== "undefined" && window.localStorage
+          ? localStorage.getItem("agentName") || null
+          : null,
+        getDictionaryHintWords(settings),
+        resolveCleanupLanguage(settings.preferredLanguage),
+        settings.uiLanguage,
+        effectiveWritingPreferences
+      );
       const isNvidia = localTranscriptionProvider === "nvidia";
       // Online models stream+commit during capture, so PCM runs even with preview off.
       const streamingCommit = useLocalWhisper && isNvidia && isOnlineParakeetModel(parakeetModel);
@@ -1277,9 +1352,10 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
             this._previewAudioContext,
             "pcm-streaming-processor"
           );
+          const previewProcessor = this._previewProcessor;
           this._previewProcessor.port.onmessage = (event) => {
             if (event.data === "flushed") {
-              this._previewFlushResolve?.();
+              this._previewFlushResolvers?.get(previewProcessor)?.();
               return;
             }
             window.electronAPI?.sendDictationPreviewAudio?.(event.data);
@@ -1289,6 +1365,15 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
           const provider = isNvidia ? "nvidia" : "whisper";
           const model = isNvidia ? parakeetModel : whisperModel;
           const language = getBaseLanguageCode(getSettings().preferredLanguage);
+          const speculativeCleanupEligible =
+            settings.backgroundCleanupEnabled !== false &&
+            settings.cleanupIntensity !== "none" &&
+            !!settings.useCleanupModel &&
+            settings.cleanupMode === "local" &&
+            !!settings.cleanupModel &&
+            !dictationAgentReachable(settings) &&
+            !this.voiceAgentRequested &&
+            !this.translationRequested;
           window.electronAPI?.startDictationPreview?.({
             provider,
             model,
@@ -1297,6 +1382,18 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
               showTranscriptionPreview,
               this.voiceAgentRequested
             ),
+            speculativeCleanup: speculativeCleanupEligible,
+            ...(speculativeCleanupEligible
+              ? {
+                  speculativeCleanupPayload: {
+                    modelId: settings.cleanupModel,
+                    systemPrompt: cleanupSystemPrompt,
+                    userPrompt: wrapCleanupTranscript(""),
+                    disableThinking: settings.cleanupDisableThinking,
+                    cacheKey: cleanupFormattingFingerprint,
+                  },
+                }
+              : {}),
           });
           this._streamingCommitActive = streamingCommit;
         } catch (e) {
@@ -1393,116 +1490,155 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         return;
       }
 
-      micStream.getTracks().forEach((track) => track.stop());
-      this._markCaptureStreamReleased();
-      await this.finalizeBatchRecording(segment);
+      let captureReleased = false;
+      const releaseCapture = () => {
+        if (captureReleased) return;
+        captureReleased = true;
+        micStream.getTracks().forEach((track) => track.stop());
+        this._markCaptureStreamReleased();
+      };
+      try {
+        // The preview worklet shares this stream. Keep the source live until
+        // it acknowledges its final PCM flush, then release it before waiting
+        // for the recognizer/cleanup pipeline to finish.
+        await this.finalizeBatchRecording(segment, { releaseCapture });
+      } finally {
+        releaseCapture();
+      }
     };
 
     if (!adoption) recorder.start(RECORDING_TIMESLICE_MS);
     return recorder;
   }
 
-  async finalizeBatchRecording(finalSegment) {
+  async finalizeBatchRecording(finalSegment, options = {}) {
     const processingPipeline = this._startProcessingPipeline();
     const wasCancelled = () => this._shouldAbandonProcessingPipeline(processingPipeline);
+    let captureReleased = false;
+    const releaseCapture = () => {
+      if (captureReleased) return;
+      captureReleased = true;
+      options.releaseCapture?.();
+    };
     this.micRecovery.stop();
     this.teardownSpeechGate();
     const previewStopPromise = (async () => {
       const startedAt = performance.now();
-      const result = await this.cleanupPreview({
-        showCleanup: this.shouldShowPreviewCleanupState(),
-      });
-      return {
-        result,
-        durationMs: Math.round(performance.now() - startedAt),
-      };
+      try {
+        const result = await this.cleanupPreview({
+          showCleanup: this.shouldShowPreviewCleanupState(),
+          onCaptureFlushed: releaseCapture,
+        });
+        return {
+          result,
+          durationMs: Math.round(performance.now() - startedAt),
+        };
+      } catch (error) {
+        // Observe the concurrently started stop immediately. A closed worklet
+        // must not become an unhandled rejection or discard an otherwise valid
+        // batch recording.
+        logger.warn("Preview finalization failed", { error: error.message }, "audio");
+        return {
+          result: null,
+          durationMs: Math.round(performance.now() - startedAt),
+          error,
+        };
+      } finally {
+        releaseCapture();
+      }
     })();
-    this.isRecording = false;
-    this.isProcessing = true;
-    this.onStateChange?.({
-      isRecording: false,
-      isProcessing: true,
-      micCaptureStatus: "inactive",
-    });
-
-    const segments = finalSegment ? [...this._batchSegments, finalSegment] : this._batchSegments;
-    this._batchSegments = [];
-    const segmentsCount = segments.filter((segment) => segment?.size > 0).length;
-    let audioBlob = null;
-    let salvagedRecording = false;
     try {
-      audioBlob = await this.mergeRecordedSegments(segments);
-    } catch (error) {
+      this.isRecording = false;
+      this.isProcessing = true;
+      this.onStateChange?.({
+        isRecording: false,
+        isProcessing: true,
+        micCaptureStatus: "inactive",
+      });
+
+      const segments = finalSegment ? [...this._batchSegments, finalSegment] : this._batchSegments;
+      this._batchSegments = [];
+      const segmentsCount = segments.filter((segment) => segment?.size > 0).length;
+      let audioBlob = null;
+      let salvagedRecording = false;
+      try {
+        audioBlob = await this.mergeRecordedSegments(segments);
+      } catch (error) {
+        if (wasCancelled()) {
+          this._settleProcessingPipeline(processingPipeline);
+          return;
+        }
+        logger.error("Failed to assemble recovered recording", { error: error.message }, "audio");
+        // Salvage the largest segment rather than dropping the whole recording.
+        audioBlob = this.getLargestRecordedSegment(segments);
+        salvagedRecording = !!audioBlob;
+      }
       if (wasCancelled()) {
         this._settleProcessingPipeline(processingPipeline);
         return;
       }
-      logger.error("Failed to assemble recovered recording", { error: error.message }, "audio");
-      // Salvage the largest segment rather than dropping the whole recording.
-      audioBlob = this.getLargestRecordedSegment(segments);
-      salvagedRecording = !!audioBlob;
-    }
-    if (wasCancelled()) {
-      this._settleProcessingPipeline(processingPipeline);
-      return;
-    }
-    audioBlob = audioBlob || new Blob([], { type: this.recordingMimeType || "audio/webm" });
-    this.lastAudioBlob = audioBlob;
+      audioBlob = audioBlob || new Blob([], { type: this.recordingMimeType || "audio/webm" });
+      this.lastAudioBlob = audioBlob;
 
-    logger.info(
-      "Recording stopped",
-      {
-        blobSize: audioBlob.size,
-        blobType: audioBlob.type,
-        segmentsCount,
-      },
-      "audio"
-    );
-
-    const durationSeconds = this.recordingStartTime
-      ? (Date.now() - this.recordingStartTime) / 1000
-      : null;
-    this.recordingStartTime = null;
-    const recordingCheck = evaluateFinishedRecording({
-      blobSize: audioBlob.size,
-      receivedAudioData: this._receivedAudioData,
-    });
-    if (!recordingCheck.usable) {
       logger.info(
-        "Dropping degenerate recording before transcription",
+        "Recording stopped",
         {
           blobSize: audioBlob.size,
-          reason: recordingCheck.reason,
-          receivedAudioData: this._receivedAudioData,
+          blobType: audioBlob.type,
+          segmentsCount,
         },
         "audio"
       );
-      if (!this._settleProcessingPipeline(processingPipeline)) return;
-      this._localSpeechGateState = null;
-      this.onTranscriptionComplete?.({ success: true, text: "" });
-      return;
-    }
-    // Non-commit sessions stop concurrently with the decode below.
-    const previewStopOutcome = this._streamingCommitActive ? await previewStopPromise : null;
-    const previewStop = previewStopOutcome?.result ?? null;
-    if (wasCancelled()) {
-      this._settleProcessingPipeline(processingPipeline);
-      return;
-    }
-    this._streamingCommitActive = false;
 
-    await this.processAudio(
-      audioBlob,
-      {
-        durationSeconds,
-        ...(salvagedRecording ? { salvagedRecording: true } : {}),
-        ...(previewStop?.streamed ? { streamedText: previewStop.text } : {}),
-        ...(previewStopOutcome
-          ? { previewFinalizationDurationMs: previewStopOutcome.durationMs }
-          : {}),
-      },
-      processingPipeline
-    );
+      const durationSeconds = this.recordingStartTime
+        ? (Date.now() - this.recordingStartTime) / 1000
+        : null;
+      this.recordingStartTime = null;
+      const recordingCheck = evaluateFinishedRecording({
+        blobSize: audioBlob.size,
+        receivedAudioData: this._receivedAudioData,
+      });
+      if (!recordingCheck.usable) {
+        logger.info(
+          "Dropping degenerate recording before transcription",
+          {
+            blobSize: audioBlob.size,
+            reason: recordingCheck.reason,
+            receivedAudioData: this._receivedAudioData,
+          },
+          "audio"
+        );
+        if (!this._settleProcessingPipeline(processingPipeline)) return;
+        this._localSpeechGateState = null;
+        this.onTranscriptionComplete?.({ success: true, text: "" });
+        return;
+      }
+      // Commit sessions need the streamed recognizer result before decode.
+      // Other sessions keep preview finalization concurrent with processAudio,
+      // while the outer finally still makes it a barrier before returning.
+      const previewStopOutcome = this._streamingCommitActive ? await previewStopPromise : null;
+      const previewStop = previewStopOutcome?.result ?? null;
+      if (wasCancelled()) {
+        this._settleProcessingPipeline(processingPipeline);
+        return;
+      }
+      this._streamingCommitActive = false;
+
+      await this.processAudio(
+        audioBlob,
+        {
+          durationSeconds,
+          ...(salvagedRecording ? { salvagedRecording: true } : {}),
+          ...(previewStop?.streamed ? { streamedText: previewStop.text } : {}),
+          ...(previewStopOutcome
+            ? { previewFinalizationDurationMs: previewStopOutcome.durationMs }
+            : {}),
+        },
+        processingPipeline
+      );
+    } finally {
+      await previewStopPromise;
+    }
   }
 
   async replaceBatchMic(replacement) {
@@ -1769,7 +1905,12 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     const pipelineStart = performance.now();
     const settings = getSettings();
     let noAudioDetected = false;
-    const speechGateDecision = getLocalSpeechGateDecision(this._localSpeechGateState);
+    const speechGateDecision = getLocalSpeechGateDecision(this._localSpeechGateState, {
+      // Parakeet does not exhibit whisper.cpp's dictionary-prompt hallucination
+      // failure, so repeated low-RMS voice peaks are safer to decode than drop.
+      allowQuietSpeech:
+        settings.useLocalWhisper && settings.localTranscriptionProvider === "nvidia",
+    });
     this._localSpeechGateState = null;
 
     const shouldUseStrongLocalWhisperGate =
@@ -2023,11 +2164,19 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         }
         const rawText = result.text;
         const reasoningStart = performance.now();
-        const text = await this.processTranscription(result.text, "local", wasCancelled);
+        const processed = await this.processTranscriptionResult(result.text, "local", wasCancelled);
+        const text = processed.text;
         timings.reasoningProcessingDurationMs = Math.round(performance.now() - reasoningStart);
 
         if (text !== null && text !== undefined) {
-          return { success: true, text: text || result.text, rawText, source: "local", timings };
+          return {
+            success: true,
+            text: text || result.text,
+            rawText,
+            source: "local",
+            timings,
+            routeKind: processed.routeKind,
+          };
         } else {
           throw new Error("No text transcribed");
         }
@@ -2122,7 +2271,12 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       if (result.success && result.text) {
         const rawText = result.text;
         const reasoningStart = performance.now();
-        const text = await this.processTranscription(result.text, "local-parakeet", wasCancelled);
+        const processed = await this.processTranscriptionResult(
+          result.text,
+          "local-parakeet",
+          wasCancelled
+        );
+        const text = processed.text;
         timings.reasoningProcessingDurationMs = Math.round(performance.now() - reasoningStart);
 
         if (text !== null && text !== undefined) {
@@ -2132,6 +2286,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
             rawText,
             source: "local-parakeet",
             timings,
+            routeKind: processed.routeKind,
             ...(result.warning ? { warning: result.warning } : {}),
           };
         } else {
@@ -2545,7 +2700,9 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
 
     const s = getSettings();
     const useReasoning =
-      !!s.useCleanupModel || dictationAgentReachable(s) || translationChainReachable(s);
+      (s.cleanupIntensity !== "none" && !!s.useCleanupModel) ||
+      dictationAgentReachable(s) ||
+      translationChainReachable(s);
     const now = Date.now();
     const cacheValid =
       this.reasoningAvailabilityCache &&
@@ -2689,13 +2846,34 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     }
   }
 
-  async processTranscription(text, source, wasCancelled = neverCancelled) {
-    const result = await this.processTranscriptionCore(text, source, wasCancelled);
-    if (wasCancelled()) return result;
-    return this.finalizeChineseScript(result);
+  async processTranscriptionResult(text, source, wasCancelled = neverCancelled) {
+    let routeKind = "skip";
+    const result = await this.processTranscriptionCore(text, source, wasCancelled, (kind) => {
+      routeKind = kind;
+    });
+    if (wasCancelled()) return { text: result, routeKind };
+    const settings = getSettings();
+    const finalizedText = await this.finalizeChineseScript(result, settings);
+    return {
+      text: expandFinalDictationSnippets(finalizedText, settings.snippets, {
+        routeKind,
+        voiceAgentRequested: this.voiceAgentRequested,
+        translationRequested: this.translationRequested,
+      }),
+      routeKind,
+    };
   }
 
-  async processTranscriptionCore(text, source, wasCancelled = neverCancelled) {
+  async processTranscription(text, source, wasCancelled = neverCancelled) {
+    return (await this.processTranscriptionResult(text, source, wasCancelled)).text;
+  }
+
+  async processTranscriptionCore(
+    text,
+    source,
+    wasCancelled = neverCancelled,
+    onRouteResolved = () => {}
+  ) {
     const normalizedText = typeof text === "string" ? text.trim() : "";
 
     if (!normalizedText) {
@@ -2718,7 +2896,10 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     const isCloud = isCloudCleanupMode();
     const settings = getSettings();
     const cleanupProvider = settings.cleanupProvider || "auto";
-    const cleanupReachable = !!settings.useCleanupModel && (!!cleanupModel || isCloud);
+    const cleanupReachable =
+      settings.cleanupIntensity !== "none" &&
+      !!settings.useCleanupModel &&
+      (!!cleanupModel || isCloud);
     const agentReachable = dictationAgentReachable(settings);
     const agentName =
       typeof window !== "undefined" && window.localStorage
@@ -2758,8 +2939,11 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
           agentName,
           this.voiceAgentRequested,
           this.translationRequested,
-          screenContext
+          screenContext,
+          undefined,
+          this.dictationTargetApp
         );
+        onRouteResolved(route.kind);
         if (this.translationRequested && route.kind !== "translation") {
           this.notifyTranslationFallback("unreachable");
         }
@@ -3053,6 +3237,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       throw dictionaryEchoError();
     }
     let processedText = result.text;
+    let routeKind = "skip";
     if (processedText) {
       const reasoningStart = performance.now();
       const agentName = localStorage.getItem("agentName") || null;
@@ -3064,8 +3249,10 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         this.voiceAgentRequested,
         this.translationRequested,
         screenContext,
-        result.sttLanguage
+        result.sttLanguage,
+        this.dictationTargetApp
       );
+      routeKind = route.kind;
       if (this.translationRequested && route.kind !== "translation") {
         this.notifyTranslationFallback("unreachable");
       }
@@ -3170,9 +3357,15 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       timings.reasoningProcessingDurationMs = Math.round(performance.now() - reasoningStart);
     }
 
+    const finalizedText = await this.finalizeChineseScript(processedText, settings);
+    const expandedText = expandFinalDictationSnippets(finalizedText, settings.snippets, {
+      routeKind,
+      voiceAgentRequested: this.voiceAgentRequested,
+      translationRequested: this.translationRequested,
+    });
     return {
       success: true,
-      text: await this.finalizeChineseScript(processedText, settings),
+      text: expandedText,
       rawText,
       source: "openwhispr",
       timings,
@@ -3180,6 +3373,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       wordsUsed: result.wordsUsed,
       wordsRemaining: result.wordsRemaining,
       clientTranscriptionId: result.clientTranscriptionId,
+      routeKind,
       ...(result.warning ? { warning: result.warning } : {}),
     };
   }
@@ -3262,11 +3456,19 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         }
         timings.transcriptionProcessingDurationMs = Math.round(performance.now() - apiCallStart);
         const reasoningStart = performance.now();
-        const text = await this.processTranscription(proxyText, provider, wasCancelled);
+        const processed = await this.processTranscriptionResult(proxyText, provider, wasCancelled);
+        const text = processed.text;
         timings.reasoningProcessingDurationMs = Math.round(performance.now() - reasoningStart);
 
         const source = (await this.isReasoningAvailable()) ? `${provider}-reasoned` : provider;
-        return { success: true, text, rawText: proxyText, source, timings };
+        return {
+          success: true,
+          text,
+          rawText: proxyText,
+          source,
+          timings,
+          routeKind: processed.routeKind,
+        };
       }
 
       const formData = new FormData();
@@ -3472,7 +3674,12 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         const rawText = result.text;
 
         const reasoningStart = performance.now();
-        const text = await this.processTranscription(result.text, "openai", wasCancelled);
+        const processed = await this.processTranscriptionResult(
+          result.text,
+          "openai",
+          wasCancelled
+        );
+        const text = processed.text;
         timings.reasoningProcessingDurationMs = Math.round(performance.now() - reasoningStart);
 
         const source = (await this.isReasoningAvailable()) ? "openai-reasoned" : "openai";
@@ -3487,7 +3694,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
           },
           "transcription"
         );
-        return { success: true, text, rawText, source, timings };
+        return { success: true, text, rawText, source, timings, routeKind: processed.routeKind };
       } else {
         // Log at info level so it shows without debug mode
         logger.info(
@@ -3544,13 +3751,19 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
           const result = await window.electronAPI.transcribeLocalWhisper(arrayBuffer, options);
 
           if (result.success && result.text) {
-            const text = await this.processTranscription(
+            const processed = await this.processTranscriptionResult(
               result.text,
               "local-fallback",
               wasCancelled
             );
+            const text = processed.text;
             if (text) {
-              return { success: true, text, source: "local-fallback" };
+              return {
+                success: true,
+                text,
+                source: "local-fallback",
+                routeKind: processed.routeKind,
+              };
             }
           }
           throw error;
@@ -3624,8 +3837,12 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
 
   async safePaste(text, options = {}) {
     try {
-      await window.electronAPI.pasteText(text, options);
-      return true;
+      const result = await window.electronAPI.pasteText(text, options);
+      return {
+        success: result?.success !== false,
+        submitted: result?.submitted === true,
+        ...(result?.submissionCode ? { submissionCode: result.submissionCode } : {}),
+      };
     } catch (error) {
       const message =
         error?.message ??
@@ -3634,7 +3851,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         title: "Paste Error",
         description: `Failed to paste text. Please check accessibility permissions. ${message}`,
       });
-      return false;
+      return { success: false, submitted: false };
     }
   }
 
@@ -4650,6 +4867,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     const rawStreamingText = finalText;
 
     let usedCloudReasoning = false;
+    let routeKind = "skip";
     if (finalText) {
       const reasoningStart = performance.now();
       const agentName = localStorage.getItem("agentName") || null;
@@ -4661,8 +4879,11 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         agentName,
         this.voiceAgentRequested,
         this.translationRequested,
-        screenContext
+        screenContext,
+        undefined,
+        this.dictationTargetApp
       );
+      routeKind = route.kind;
       if (this.translationRequested && route.kind !== "translation") {
         this.notifyTranslationFallback("unreachable");
       }
@@ -4830,6 +5051,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
           if (wasCancelled()) return true;
           if (batchResult?.text) {
             finalText = batchResult.text;
+            routeKind = batchResult.routeKind || "skip";
             usedBatchFallback = true;
             batchWarning = batchResult.warning || null;
             logger.info("Batch fallback succeeded", { textLength: finalText.length }, "streaming");
@@ -4846,6 +5068,11 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       if (!usedBatchFallback) {
         finalText = await this.finalizeChineseScript(finalText, stSettings);
         if (wasCancelled()) return true;
+        finalText = expandFinalDictationSnippets(finalText, stSettings.snippets, {
+          routeKind,
+          voiceAgentRequested: this.voiceAgentRequested,
+          translationRequested: this.translationRequested,
+        });
       }
       const tBeforePaste = performance.now();
       const clientTotalMs = Math.round(tBeforePaste - t0);
@@ -4862,6 +5089,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         text: finalText,
         rawText: rawStreamingText || finalText,
         source: `${this.getStreamingProviderName()}-streaming`,
+        routeKind,
         ...this._takePendingResultExtras(),
         ...(batchWarning ? { warning: batchWarning } : {}),
       });
@@ -4932,14 +5160,14 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
   shouldShowPreviewCleanupState() {
     const settings = getSettings();
     return (
-      !!settings.useCleanupModel ||
+      (settings.cleanupIntensity !== "none" && !!settings.useCleanupModel) ||
       !!settings.useDictationAgent ||
       (this.translationRequested && !!settings.useDictationTranslation)
     );
   }
 
   async cleanupPreview(options = {}) {
-    const { dismiss = false, showCleanup = false } = options;
+    const { dismiss = false, showCleanup = false, onCaptureFlushed = null } = options;
 
     // Claim the session's nodes synchronously so a recording started during the
     // flush await can never have its fresh nodes torn down by this cleanup.
@@ -4951,26 +5179,41 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     this._previewAudioContext = null;
 
     let flushed = true;
-    if (processor) {
-      // The worklet posts all PCM before "flushed", and the PCM sends share the
-      // renderer->main pipe with the stop invoke (FIFO), so the final chunk precedes finish.
-      let resolveFlush;
-      const flushSentinel = new Promise((resolve) => {
-        resolveFlush = () => resolve(true);
-      });
-      let watchdogTimer;
-      const watchdogFired = new Promise((resolve) => {
-        watchdogTimer = setTimeout(() => resolve(false), PREVIEW_FLUSH_WATCHDOG_MS);
-      });
-      this._previewFlushResolve = resolveFlush;
-      processor.port.postMessage("stop");
-      flushed = await Promise.race([flushSentinel, watchdogFired]);
-      clearTimeout(watchdogTimer);
-      if (this._previewFlushResolve === resolveFlush) this._previewFlushResolve = null;
-      processor.disconnect();
+    try {
+      if (processor) {
+        // The worklet posts all PCM before "flushed", and the PCM sends share the
+        // renderer->main pipe with the stop invoke (FIFO), so the final chunk precedes finish.
+        let resolveFlush;
+        let watchdogTimer;
+        const flushSentinel = new Promise((resolve) => {
+          resolveFlush = () => resolve(true);
+        });
+        const watchdogFired = new Promise((resolve) => {
+          watchdogTimer = setTimeout(() => resolve(false), PREVIEW_FLUSH_WATCHDOG_MS);
+        });
+        const flushResolvers =
+          this._previewFlushResolvers || (this._previewFlushResolvers = new WeakMap());
+        flushResolvers.set(processor, resolveFlush);
+        try {
+          processor.port.postMessage("stop");
+          flushed = await Promise.race([flushSentinel, watchdogFired]);
+        } finally {
+          clearTimeout(watchdogTimer);
+          if (flushResolvers.get(processor) === resolveFlush) flushResolvers.delete(processor);
+          processor.disconnect();
+        }
+      }
+    } finally {
+      try {
+        source?.disconnect();
+        audioContext?.close().catch(() => {});
+      } finally {
+        // MediaRecorder and the PCM worklet share one mic stream. Releasing it
+        // before this point can discard the last render quantum; after the flush
+        // sentinel, keeping it live only leaves the microphone open needlessly.
+        onCaptureFlushed?.();
+      }
     }
-    source?.disconnect();
-    audioContext?.close().catch(() => {});
     if (dismiss) {
       window.electronAPI?.dismissDictationPreview?.();
       return null;

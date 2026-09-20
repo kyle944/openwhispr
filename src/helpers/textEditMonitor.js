@@ -121,6 +121,7 @@ class TextEditMonitor extends EventEmitter {
     this._lastValue = null;
     this._stdoutBuffer = "";
     this.lastTargetPid = null;
+    this.lastTargetApp = null;
     this._captureTargetPromise = null;
     this._lastCaptureAt = 0;
     this._windowBounds = null;
@@ -131,28 +132,30 @@ class TextEditMonitor extends EventEmitter {
   }
 
   /**
-   * macOS: capture the active app's PID via NSWorkspace before the overlay steals focus.
+   * macOS: capture the active app's stable identity via NSWorkspace before the overlay steals focus.
    * Must be called at hotkey press time, BEFORE showDictationPanel()/mainWindow.show().
    * NSWorkspace.frontmostApplication correctly identifies the key window owner,
    * ignoring panel-type windows like the OpenWhispr overlay.
    *
-   * Resolves with the captured PID (or null). At most one lookup runs at a
+   * Resolves with PID, bundle identifier, and localized app name (or null).
+   * At most one lookup runs at a
    * time: concurrent calls share the in-flight lookup, so an older lookup can
    * never overwrite a newer target, and a just-captured result is reused
    * briefly so the press-time and recording-start captures of one dictation
    * cost a single osascript spawn instead of several.
    */
-  captureTargetPid() {
+  captureTargetApp() {
     if (process.platform !== "darwin") return Promise.resolve(null);
     if (this._captureTargetPromise) return this._captureTargetPromise;
     if (
       this.lastTargetPid !== null &&
       Date.now() - this._lastCaptureAt < TARGET_CAPTURE_FRESHNESS_MS
     ) {
-      return Promise.resolve(this.lastTargetPid);
+      return Promise.resolve(this.lastTargetApp);
     }
     this.lastTargetPid = null;
-    this._captureTargetPromise = this._readFrontmostPid().then((pid) => {
+    this.lastTargetApp = null;
+    this._captureTargetPromise = this._readFrontmostApp().then((target) => {
       this._captureTargetPromise = null;
       this._lastCaptureAt = Date.now();
       // A focusable OpenWhispr window (for example Settings or History) can be
@@ -161,35 +164,79 @@ class TextEditMonitor extends EventEmitter {
       // restored and the transcript appears to have vanished. A null target
       // makes the paste handler hide OpenWhispr and return focus to macOS's
       // previous app before sending the paste.
-      const externalPid = pid === process.pid ? null : pid;
-      this.lastTargetPid = externalPid;
-      debugLogger.debug("[TextEditMonitor] Captured target PID", {
-        pid: externalPid,
-        ignoredSelf: pid === process.pid,
+      const ignoredSelf = target?.pid === process.pid;
+      const externalTarget = !target?.pid || ignoredSelf ? null : target;
+      this.lastTargetPid = externalTarget?.pid ?? null;
+      this.lastTargetApp = externalTarget;
+      debugLogger.debug("[TextEditMonitor] Captured target app", {
+        pid: externalTarget?.pid ?? null,
+        bundleId: externalTarget?.bundleId ?? null,
+        appName: externalTarget?.appName ?? null,
+        ignoredSelf,
       });
-      return externalPid;
+      return externalTarget;
     });
     return this._captureTargetPromise;
   }
 
+  captureTargetPid() {
+    return this.captureTargetApp().then((target) => target?.pid ?? null);
+  }
+
   /**
-   * macOS: resolve the frontmost app's PID, or null if it can't be read.
+   * macOS: resolve the frontmost app's stable identity, or null if it can't be read.
    */
-  _readFrontmostPid() {
+  _readFrontmostApp() {
     return new Promise((resolve) => {
       if (process.platform !== "darwin") {
         resolve(null);
         return;
       }
-      const script =
-        'ObjC.import("AppKit"); $.NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier';
+      // Read only stable app identity. Window titles, focused values, selected
+      // text, screenshots, and clipboard contents are deliberately excluded.
+      const script = `
+        ObjC.import("AppKit");
+        (() => {
+          const app = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+          if (!app) return JSON.stringify({ pid: null, bundleId: null, appName: null });
+          const unwrap = (value) => value ? ObjC.unwrap(value) : null;
+          return JSON.stringify({
+            pid: Number(app.processIdentifier),
+            bundleId: unwrap(app.bundleIdentifier),
+            appName: unwrap(app.localizedName)
+          });
+        })()
+      `;
       execFile(
         "osascript",
         ["-l", "JavaScript", "-e", script],
         { timeout: 2000 },
         (err, stdout) => {
-          const pid = err ? NaN : parseInt(stdout.trim(), 10);
-          resolve(isNaN(pid) ? null : pid);
+          if (err) {
+            resolve(null);
+            return;
+          }
+          try {
+            const parsed = JSON.parse(stdout.trim());
+            const pid = Number(parsed?.pid);
+            if (!Number.isInteger(pid) || pid <= 0) {
+              resolve(null);
+              return;
+            }
+            resolve({
+              pid,
+              bundleId:
+                typeof parsed.bundleId === "string" && parsed.bundleId.trim()
+                  ? parsed.bundleId.trim().slice(0, 255)
+                  : null,
+              appName:
+                typeof parsed.appName === "string" && parsed.appName.trim()
+                  ? parsed.appName.trim().slice(0, 120)
+                  : null,
+            });
+          } catch {
+            resolve(null);
+          }
         }
       );
     });

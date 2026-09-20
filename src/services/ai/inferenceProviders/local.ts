@@ -14,15 +14,26 @@ export const localProvider: InferenceProvider = {
 
     logger.logReasoning("LOCAL_IPC_CALL", { model, textLength: text.length });
 
-    const isCleanup = !config.systemPrompt;
+    // A session-specific cleanup prompt (for example, an app writing style)
+    // is still cleanup even though it is supplied explicitly. Keep the legacy
+    // no-prompt path for callers that predate inference scopes.
+    const isCleanup = config.inferenceScope === "dictationCleanup" || !config.systemPrompt;
     const systemPrompt = config.systemPrompt || ctx.getSystemPrompt(agentName);
     const userContent = isCleanup ? wrapCleanupTranscript(text) : text;
+    const speculativeCleanup =
+      isCleanup && config.inferenceScope === "dictationCleanup"
+        ? {
+            eligible: true,
+            cacheKey: config.speculativeCleanupCacheKey || "",
+          }
+        : undefined;
     const result = await window.electronAPI.processLocalReasoning(userContent, model, agentName, {
       ...config,
       systemPrompt,
       // Cleanup is a deterministic text transform. The local bridge otherwise
       // defaults to 0.7, which makes short misspellings vary between runs.
       ...(isCleanup && config.temperature === undefined ? { temperature: 0 } : {}),
+      ...(speculativeCleanup ? { speculativeCleanup } : {}),
     });
 
     const processingTimeMs = Date.now() - startTime;

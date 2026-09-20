@@ -637,7 +637,23 @@
         "recover": "Récupérer",
         "recovered": "Récupérée"
       },
-      "retryTranslationMode": "Mode Traduction"
+      "retryTranslationMode": "Mode Traduction",
+      "searchLabel": "Rechercher dans l’historique",
+      "searchPlaceholder": "Rechercher dans toutes les transcriptions locales",
+      "dateFilterLabel": "Date",
+      "allDates": "Toutes les dates",
+      "today": "Aujourd’hui",
+      "last7Days": "7 derniers jours",
+      "last30Days": "30 derniers jours",
+      "usage": "{{entries}} entrées · {{words}} mots",
+      "matchingUsage": "{{entries}} entrées correspondantes · {{words}} mots",
+      "searchScope": "Recherche dans tout l’historique local",
+      "exportText": "Exporter le texte",
+      "exportJson": "Exporter en JSON",
+      "exportFailed": "Impossible d’exporter l’historique",
+      "searchFailed": "Impossible de rechercher dans l’historique",
+      "noMatches": "Aucune transcription correspondante",
+      "loadMore": "Charger plus"
     },
     "cloudMigration": {
       "title": "Bienvenue sur OpenWhispr Cloud",
@@ -1945,6 +1961,38 @@
       "description": "Corrige les transcriptions, gère les commandes et corrige les erreurs tout en préservant votre ton.",
       "enableTextCleanup": "Activer la correction de texte",
       "enableTextCleanupDescription": "L'IA supprime les mots de remplissage, corrige la grammaire et la ponctuation",
+      "writing": {
+        "title": "Rédaction",
+        "description": "Choisissez comment la dictée est corrigée et mise en forme.",
+        "availability": "Les réglages d'écriture sont disponibles avec les fournisseurs de correction locaux et personnalisés.",
+        "intensity": "Correction",
+        "intensityDescription": "Aucune colle la transcription brute. Légère conserve le comportement actuel. Soignée effectue une révision plus complète.",
+        "intensityOptions": { "none": "Aucune", "light": "Légère", "polished": "Soignée" },
+        "outputMode": "Sortie",
+        "outputModeDescription": "Mettez le contenu dicté en forme comme une dictée, des notes avec tâches explicites ou un brouillon d'e-mail.",
+        "outputModeOptions": {
+          "dictation": "Dictée",
+          "notesToDos": "Notes et tâches",
+          "email": "E-mail"
+        },
+        "tone": "Ton",
+        "toneDescription": "Choisissez un ton seulement si vous voulez que la correction ajuste la formulation.",
+        "toneOptions": { "default": "Par défaut", "formal": "Formel", "casual": "Décontracté" },
+        "backgroundCleanup": "Garder la correction prête",
+        "backgroundCleanupDescription": "Prépare la correction entre les dictées pour qu'elle soit prête quand vous avez fini de parler."
+      },
+      "perAppStyles": {
+        "title": "Styles par application",
+        "description": "Personnalisez la sortie et le ton pour les applications dans lesquelles vous avez dicté. Seuls le nom et l'identifiant de l'application sont stockés sur cet appareil.",
+        "availability": "Les styles par application sont disponibles lorsque la correction utilise un modèle local.",
+        "empty": "Dictez une fois dans une application pour l'ajouter ici.",
+        "output": "Sortie",
+        "tone": "Ton",
+        "followGlobal": "Utiliser le réglage global",
+        "outputFor": "Style de sortie pour {{app}}",
+        "toneFor": "Ton pour {{app}}",
+        "remove": "Supprimer {{app}}"
+      },
       "modes": {
         "openwhispr": "OpenWhispr Cloud",
         "providers": "Fournisseurs cloud",
@@ -2121,7 +2169,9 @@
         "autoPaste": "Collage automatique",
         "autoPasteDescription": "Coller automatiquement le texte transcrit dans l'application active à la fin de la dictée",
         "keepInClipboard": "Garder la transcription dans le presse-papiers",
-        "keepInClipboardDescription": "Conserver le texte dicté dans le presse-papiers pour pouvoir le coller manuellement si nécessaire"
+        "keepInClipboardDescription": "Conserver le texte dicté dans le presse-papiers pour pouvoir le coller manuellement si nécessaire",
+        "spokenEnter": "Envoyer avec Entrée vocale",
+        "spokenEnterDescription": "Sur Mac, dites \"press Enter\" après une dictée terminée pour la coller et appuyer sur Retour dans la même app."
       },
       "startup": {
         "launchAtLogin": "Lancer au démarrage",
@@ -3058,7 +3108,18 @@
       "queueFailed": "{{n}} en échec",
       "urlFileTooLarge": "Le fichier est trop volumineux pour être téléchargé. La taille maximale est de 500 Mo.",
       "urlYoutubeBlocked": "YouTube bloque temporairement les téléchargements depuis votre réseau. Réessayez dans un moment.",
-      "customEndpointInvalid": "Le point de terminaison de transcription personnalisé n'est pas configuré ou est invalide. Mettez-le à jour dans les réglages."
+      "customEndpointInvalid": "Le point de terminaison de transcription personnalisé n'est pas configuré ou est invalide. Mettez-le à jour dans les réglages.",
+      "importTranscript": "Importer une transcription",
+      "importDescription": "TXT, Markdown, SRT, VTT ou JSON · jusqu'à 10 Mo · reste sur cet appareil",
+      "importChooseFile": "Choisir un fichier de transcription",
+      "importing": "Importation...",
+      "importComplete": "Transcription importée",
+      "importDuplicate": "Cette transcription a déjà été importée.",
+      "importTooLarge": "Les fichiers de transcription doivent faire 10 Mo ou moins.",
+      "importUnsupported": "Choisissez une transcription TXT, Markdown, SRT, VTT ou JSON.",
+      "importMalformed": "Ce fichier de transcription n'a pas pu être lu.",
+      "importEmpty": "Le fichier de transcription est vide.",
+      "importFailed": "Impossible d'enregistrer la transcription importée."
     },
     "meeting": {
       "title": "Notes de réunion",

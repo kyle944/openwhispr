@@ -637,7 +637,23 @@
         "recover": "恢复",
         "recovered": "已恢复"
       },
-      "retryTranslationMode": "翻译模式"
+      "retryTranslationMode": "翻译模式",
+      "searchLabel": "搜索历史记录",
+      "searchPlaceholder": "搜索所有本地转录记录",
+      "dateFilterLabel": "日期",
+      "allDates": "所有日期",
+      "today": "今天",
+      "last7Days": "过去 7 天",
+      "last30Days": "过去 30 天",
+      "usage": "{{entries}} 条记录 · {{words}} 个词",
+      "matchingUsage": "{{entries}} 条匹配记录 · {{words}} 个词",
+      "searchScope": "搜索全部本地历史记录",
+      "exportText": "导出文本",
+      "exportJson": "导出 JSON",
+      "exportFailed": "无法导出历史记录",
+      "searchFailed": "无法搜索历史记录",
+      "noMatches": "没有匹配的转录记录",
+      "loadMore": "加载更多"
     },
     "cloudMigration": {
       "title": "欢迎使用 OpenWhispr 云端",
@@ -1661,6 +1677,38 @@
       "description": "整理转录文本、处理指令、修正错误，同时保留你的语气风格。",
       "enableTextCleanup": "启用文本整理",
       "enableTextCleanupDescription": "AI 去除语气词，修正语法和标点",
+      "writing": {
+        "title": "写作",
+        "description": "选择如何整理和格式化听写内容。",
+        "availability": "写作控制项适用于本地和自定义文本整理服务商。",
+        "intensity": "整理程度",
+        "intensityDescription": "不整理会粘贴原始转录。轻度保持当前整理方式。润色会进行更完整的编辑。",
+        "intensityOptions": { "none": "不整理", "light": "轻度", "polished": "润色" },
+        "outputMode": "输出格式",
+        "outputModeDescription": "将听写内容整理为普通听写、含明确待办事项的笔记，或电子邮件草稿。",
+        "outputModeOptions": {
+          "dictation": "听写",
+          "notesToDos": "笔记和待办事项",
+          "email": "电子邮件"
+        },
+        "tone": "语气",
+        "toneDescription": "仅当你希望整理过程调整措辞时才选择语气。",
+        "toneOptions": { "default": "默认", "formal": "正式", "casual": "随意" },
+        "backgroundCleanup": "保持整理就绪",
+        "backgroundCleanupDescription": "在两次听写之间准备整理功能，以便你说完后立即使用。"
+      },
+      "perAppStyles": {
+        "title": "按应用设置样式",
+        "description": "为使用过听写的应用单独设置输出格式和语气。此设备只会保存应用名称和标识符。",
+        "availability": "使用本地模型进行文本整理时，可使用按应用设置样式。",
+        "empty": "在某个应用中听写一次，即可将其添加到此处。",
+        "output": "输出格式",
+        "tone": "语气",
+        "followGlobal": "使用全局设置",
+        "outputFor": "{{app}} 的输出格式",
+        "toneFor": "{{app}} 的语气",
+        "remove": "移除 {{app}}"
+      },
       "modes": {
         "openwhispr": "OpenWhispr Cloud",
         "providers": "云服务商",
@@ -1837,7 +1885,9 @@
         "autoPaste": "自动粘贴",
         "autoPasteDescription": "听写结束后自动将转录文本粘贴到当前活动的应用中",
         "keepInClipboard": "将转录内容保留在剪贴板",
-        "keepInClipboardDescription": "将听写文本保留在剪贴板中，以便在需要时手动粘贴"
+        "keepInClipboardDescription": "将听写文本保留在剪贴板中，以便在需要时手动粘贴",
+        "spokenEnter": "通过语音 Enter 提交",
+        "spokenEnterDescription": "在 Mac 上，完成听写后说“press Enter”，即可粘贴文本并在同一应用中按下 Return。"
       },
       "startup": {
         "launchAtLogin": "登录时启动",
@@ -2847,7 +2897,18 @@
       "queueFailed": "{{n}} 个失败",
       "urlFileTooLarge": "文件过大，无法下载。最大大小为 500 MB。",
       "urlYoutubeBlocked": "YouTube 暂时阻止了来自您网络的下载。请稍后重试。",
-      "customEndpointInvalid": "自定义转写端点未配置或无效。请在设置中更新。"
+      "customEndpointInvalid": "自定义转写端点未配置或无效。请在设置中更新。",
+      "importTranscript": "导入转录",
+      "importDescription": "TXT、Markdown、SRT、VTT 或 JSON · 最大 10 MB · 保留在此设备上",
+      "importChooseFile": "选择转录文件",
+      "importing": "正在导入...",
+      "importComplete": "转录已导入",
+      "importDuplicate": "此转录已导入。",
+      "importTooLarge": "转录文件必须为 10 MB 或更小。",
+      "importUnsupported": "请选择 TXT、Markdown、SRT、VTT 或 JSON 转录文件。",
+      "importMalformed": "无法读取此转录文件。",
+      "importEmpty": "转录文件为空。",
+      "importFailed": "无法保存导入的转录。"
     },
     "meeting": {
       "title": "会议笔记",

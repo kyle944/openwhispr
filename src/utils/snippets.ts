@@ -3,6 +3,13 @@ export interface Snippet {
   replacement: string;
 }
 
+export interface FinalDictationSnippetContext {
+  routeKind?: "skip" | "cleanup" | "agent" | "translation" | null;
+  voiceAgentRequested?: boolean;
+  translationRequested?: boolean;
+  selectionEdit?: boolean;
+}
+
 interface SnippetMatcher {
   regex: RegExp;
   replacements: Map<string, string>;
@@ -70,6 +77,28 @@ export function expandSnippets(text: string, snippets?: Snippet[] | null): strin
       match
     );
   });
+}
+
+/**
+ * Expand saved spoken snippets only for text that will be inserted as ordinary
+ * dictation. Agent commands, translations, and selection edits must keep the
+ * model's exact output. `expandSnippets` itself is single-pass, so replacement
+ * text is never scanned recursively for another trigger.
+ */
+export function expandFinalDictationSnippets(
+  text: string,
+  snippets?: Snippet[] | null,
+  context: FinalDictationSnippetContext = {}
+): string {
+  if (
+    context.selectionEdit ||
+    context.voiceAgentRequested ||
+    context.translationRequested ||
+    (context.routeKind !== "skip" && context.routeKind !== "cleanup")
+  ) {
+    return text;
+  }
+  return expandSnippets(text, snippets);
 }
 
 /**

@@ -13,6 +13,7 @@ const {
 const modelRegistryData = require("../models/modelRegistryData.json");
 const LlamaServerManager = require("./llamaServer");
 const debugLogger = require("./debugLogger");
+const { createAbortError } = require("./abortError");
 
 const MIN_FILE_SIZE = 1_000_000; // 1MB minimum for valid model files
 
@@ -20,6 +21,7 @@ const MIN_FILE_SIZE = 1_000_000; // 1MB minimum for valid model files
 // (128K+), which can exceed total RAM (#1203). Uniform for all start paths:
 // start() won't restart a ready server when only options change.
 const SERVER_CONTEXT_SIZE = 16384;
+const EXTERNAL_INFERENCE_LEASE_TIMEOUT_MS = 6 * 60 * 1000;
 
 function getLocalProviders() {
   return modelRegistryData.localProviders || [];
@@ -54,6 +56,11 @@ class ModelManager {
     this.promptWarmLatestKey = null;
     this.promptWarmPending = 0;
     this.promptWarmPayload = null;
+    // llama-server owns one mutable model/server/cache. Every request reserves
+    // this queue before validation or startup so a later warmup cannot race a
+    // foreground request into the same server.
+    this.inferenceTail = Promise.resolve();
+    this.externalInferenceLeases = new Map();
     this._initialized = false;
 
     // IMPORTANT: Do NOT call app.getPath() here!
@@ -445,22 +452,60 @@ class ModelManager {
     }
   }
 
-  async runInference(modelId, prompt, options = {}) {
-    // Prompt prefill intentionally bypasses LocalReasoningService so it can
-    // overlap speech capture. Canonical inference must wait for that work to
-    // finish, however, or both requests compete for the same Metal-backed
-    // llama server and the user-visible cleanup gets slower.
-    if (!options.isPromptWarmup) {
-      let pendingWarmups = this.promptWarmTail;
-      while (this.promptWarmPending > 0) {
-        await pendingWarmups.catch(() => {});
-        if (pendingWarmups === this.promptWarmTail) break;
-        pendingWarmups = this.promptWarmTail;
-      }
+  _waitForQueue(operation, signal) {
+    if (!signal) return operation;
+    if (signal.aborted) return Promise.reject(createAbortError("llama-server request aborted"));
 
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        signal.removeEventListener("abort", onAbort);
+        reject(createAbortError("llama-server request aborted"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      operation.then(
+        (value) => {
+          signal.removeEventListener("abort", onAbort);
+          resolve(value);
+        },
+        (error) => {
+          signal.removeEventListener("abort", onAbort);
+          reject(error);
+        }
+      );
+    });
+  }
+
+  _enqueueInference(operation, signal) {
+    const previous = this.inferenceTail;
+    const queued = previous
+      .catch(() => {})
+      .then(async () => {
+        if (signal?.aborted) throw createAbortError("llama-server request aborted");
+        return operation();
+      });
+    this.inferenceTail = queued.catch(() => {});
+    return this._waitForQueue(queued, signal);
+  }
+
+  runInference(modelId, prompt, options = {}) {
+    const queuedAt = Date.now();
+    return this._enqueueInference(() => {
+      const queueWaitMs = Date.now() - queuedAt;
+      if (queueWaitMs > 0) {
+        debugLogger.logReasoning("INFERENCE_WAITED_FOR_SERVER_QUEUE", {
+          modelId,
+          queueWaitMs,
+        });
+      }
+      return this._runInference(modelId, prompt, options);
+    }, options.signal);
+  }
+
+  async _runInference(modelId, prompt, options = {}) {
+    if (!options.isPromptWarmup) {
       // A chat/agent/translation request uses a different prefix and can evict
-      // the cleanup prompt from llama.cpp's active cache. Mark it dirty as soon
-      // as that work is queued. Normal cleanup inference uses the same system
+      // the cleanup prompt from llama.cpp's active cache. Mark it dirty when
+      // that work begins. Normal cleanup inference uses the same system
       // prompt and keeps the warm marker, avoiding a redundant prefill at the
       // start of every recording.
       if (
@@ -477,7 +522,11 @@ class ModelManager {
     debugLogger.logReasoning("INFERENCE_START", {
       modelId,
       promptLength: prompt.length,
-      options: { ...options, systemPrompt: options.systemPrompt ? "[set]" : "[not set]" },
+      options: {
+        ...options,
+        systemPrompt: options.systemPrompt ? "[set]" : "[not set]",
+        signal: options.signal ? "[set]" : "[not set]",
+      },
     });
 
     // Ensure server is available
@@ -546,13 +595,13 @@ class ModelManager {
         max_tokens: options.maxTokens ?? 512,
         disableThinking: options.disableThinking,
         requireCompleteOutput: options.requireCompleteOutput,
+        signal: options.signal,
       });
 
       const totalTime = Date.now() - startTime;
       debugLogger.logReasoning("INFERENCE_SUCCESS", {
         totalTimeMs: totalTime,
         resultLength: result.length,
-        resultPreview: result.substring(0, 200) + (result.length > 200 ? "..." : ""),
       });
 
       return result;
@@ -562,13 +611,184 @@ class ModelManager {
         totalTimeMs: totalTime,
         error: error.message,
       });
+      if (error.name === "AbortError") throw error;
       throw new ModelError(`Inference failed: ${error.message}`, "INFERENCE_FAILED", {
         error: error.message,
       });
     }
   }
 
-  async stopServer() {
+  async _startServerForModel(modelId) {
+    this.ensureInitialized();
+    if (!this.serverManager.isAvailable()) {
+      throw new ModelError(
+        "llama-server binary not found. Please ensure the app is installed correctly.",
+        "LLAMASERVER_NOT_FOUND"
+      );
+    }
+
+    const modelInfo = this.findModelById(modelId);
+    if (!modelInfo) throw new ModelNotFoundError(modelId);
+
+    const modelPath = path.join(this.modelsDir, modelInfo.model.fileName);
+    if (!(await this.checkModelValid(modelPath))) {
+      throw new ModelError(
+        `Model ${modelId} is not downloaded or is corrupted`,
+        "MODEL_NOT_DOWNLOADED",
+        { modelId }
+      );
+    }
+
+    await this.serverManager.start(modelPath, await this.serverStartOptions(modelInfo));
+    this.currentServerModelId = modelId;
+    const port = this.serverManager.port;
+    if (!Number.isInteger(port) || port <= 0) {
+      await this.serverManager.stop();
+      this.currentServerModelId = null;
+      throw new ModelError("llama-server started without a valid port", "LLAMASERVER_INVALID_PORT");
+    }
+    return port;
+  }
+
+  startServer(modelId) {
+    return this._enqueueInference(() => this._startServerForModel(modelId));
+  }
+
+  beginExternalInferenceLease(
+    modelId,
+    ownerId,
+    { timeoutMs = EXTERNAL_INFERENCE_LEASE_TIMEOUT_MS } = {}
+  ) {
+    if (ownerId === undefined || ownerId === null) {
+      return Promise.reject(new Error("An external inference lease requires an owner"));
+    }
+
+    const token = crypto.randomUUID();
+    let resolveReady;
+    let rejectReady;
+    let resolveRelease;
+    const ready = new Promise((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+    });
+    const released = new Promise((resolve) => {
+      resolveRelease = resolve;
+    });
+    const record = {
+      token,
+      ownerId,
+      modelId,
+      state: "queued",
+      timer: null,
+      resolveRelease,
+      releasePromise: null,
+      completion: null,
+    };
+    this.externalInferenceLeases.set(token, record);
+
+    record.completion = this._enqueueInference(async () => {
+      if (record.state === "released") {
+        throw createAbortError("External llama-server lease was cancelled before startup");
+      }
+
+      const port = await this._startServerForModel(modelId);
+      if (record.state === "released") {
+        throw createAbortError("External llama-server lease was cancelled during startup");
+      }
+
+      // Renderer-owned HTTP requests bypass _runInference, so conservatively
+      // invalidate the cleanup prefix before the renderer can touch the cache.
+      this.promptWarmState = null;
+      record.state = "active";
+      record.timer = setTimeout(
+        () => {
+          void this.releaseExternalInferenceLease(token, ownerId, "timeout");
+        },
+        Math.max(1, timeoutMs)
+      );
+      record.timer.unref?.();
+      resolveReady({ port, leaseToken: token });
+
+      await released;
+    })
+      .catch((error) => {
+        rejectReady(error);
+        throw error;
+      })
+      .finally(() => {
+        if (record.timer) clearTimeout(record.timer);
+        if (this.externalInferenceLeases.get(token) === record) {
+          this.externalInferenceLeases.delete(token);
+        }
+      });
+    // The queue owns completion; callers await `ready`, then explicitly release.
+    record.completion.catch(() => {});
+    return ready;
+  }
+
+  async releaseExternalInferenceLease(token, ownerId, reason = "renderer-release") {
+    const record = this.externalInferenceLeases.get(token);
+    if (!record || record.ownerId !== ownerId) return false;
+    if (!record.releasePromise) {
+      record.releasePromise = (async () => {
+        const wasActive = record.state === "active";
+        record.state = "releasing";
+        if (wasActive && reason !== "renderer-release") {
+          // A renderer-owned HTTP request can outlive its IPC owner. Kill that
+          // request before opening the queue or a restart could overlap it.
+          await this.serverManager.stop().catch((error) => {
+            debugLogger.warn("Failed to stop llama-server while recovering external lease", {
+              modelId: record.modelId,
+              reason,
+              error: error.message,
+            });
+          });
+          this.currentServerModelId = null;
+          this.promptWarmState = null;
+        }
+        record.state = "released";
+        record.resolveRelease(reason);
+        await record.completion.catch(() => {});
+        return true;
+      })();
+    }
+    return record.releasePromise;
+  }
+
+  async releaseExternalInferenceLeasesForOwner(ownerId, reason = "owner-gone") {
+    const owned = [...this.externalInferenceLeases.values()].filter(
+      (record) => record.ownerId === ownerId
+    );
+    await Promise.all(
+      owned.map((record) => this.releaseExternalInferenceLease(record.token, ownerId, reason))
+    );
+    return owned.length;
+  }
+
+  _restartServer({ resetGpuDetection = false } = {}) {
+    const previousModelId = this.currentServerModelId;
+    if (resetGpuDetection) this.serverManager.resetGpuDetection();
+    return this._stopServer().then(async () => {
+      if (previousModelId) await this._prewarmServer(previousModelId);
+      return true;
+    });
+  }
+
+  restartServer() {
+    return this._enqueueInference(() => this._restartServer());
+  }
+
+  resetGpuAndRestart() {
+    return this._enqueueInference(async () => {
+      return this._restartServer({ resetGpuDetection: true });
+    });
+  }
+
+  stopServer() {
+    return this._enqueueInference(() => this._stopServer());
+  }
+
+  async _stopServer() {
     await this.serverManager.stop();
     this.currentServerModelId = null;
   }
@@ -577,7 +797,11 @@ class ModelManager {
     return this.serverManager.getStatus();
   }
 
-  async prewarmServer(modelId) {
+  prewarmServer(modelId) {
+    return this._enqueueInference(() => this._prewarmServer(modelId));
+  }
+
+  async _prewarmServer(modelId) {
     if (!modelId) return false;
     this.ensureInitialized();
 
@@ -601,59 +825,74 @@ class ModelManager {
   }
 
   async prewarmPrompt(
-    { modelId, systemPrompt, userPrompt, disableThinking = true },
+    { modelId, systemPrompt, userPrompt, disableThinking = true, cacheKey = "" },
     { force = false } = {}
   ) {
     if (!modelId || !systemPrompt || !userPrompt) return false;
 
-    const payload = { modelId, systemPrompt, userPrompt, disableThinking };
+    const payload = { modelId, systemPrompt, userPrompt, disableThinking, cacheKey };
     this.promptWarmPayload = payload;
     const key = crypto.createHash("sha256").update(JSON.stringify(payload)).digest("hex");
-    const currentPid = this.serverManager.process?.pid ?? null;
-
-    if (
-      !force &&
-      this.promptWarmPending === 0 &&
-      currentPid !== null &&
-      this.currentServerModelId === modelId &&
-      this.promptWarmState?.key === key &&
-      this.promptWarmState?.pid === currentPid
-    ) {
-      return true;
-    }
-
-    // Identical callers share the newest queued warmup. A changed dictionary
-    // or prompt is appended after the old one so the latest request always
-    // owns the final cache state.
+    // Identical callers share the newest queued warmup. Each non-identical
+    // warmup reserves the single inference queue immediately, so a foreground
+    // request admitted later cannot pass validation/startup while it runs.
     if (this.promptWarmPending > 0 && this.promptWarmLatestKey === key) {
       return this.promptWarmTail;
     }
 
-    const previousWarmups = this.promptWarmTail;
     this.promptWarmPending += 1;
     this.promptWarmLatestKey = key;
-    const warmup = previousWarmups
-      .catch(() => {})
-      .then(async () => {
-        await this.runInference(modelId, userPrompt, {
-          systemPrompt,
-          temperature: 0,
-          maxTokens: 1,
-          disableThinking,
-          isPromptWarmup: true,
+    debugLogger.logReasoning("PROMPT_WARMUP_QUEUED", {
+      modelId,
+      promptKey: key.slice(0, 12),
+      systemPromptLength: systemPrompt.length,
+      userPromptLength: userPrompt.length,
+      pendingWarmups: this.promptWarmPending,
+    });
+    const warmup = this._enqueueInference(async () => {
+      // Re-check only after this prewarm reaches the server queue. A foreground
+      // request can be admitted in the same tick and evict the prefix before
+      // this work begins, so checking at call time would leave a false marker.
+      const currentPid = this.serverManager.process?.pid ?? null;
+      if (
+        !force &&
+        currentPid !== null &&
+        this.currentServerModelId === modelId &&
+        this.promptWarmState?.key === key &&
+        this.promptWarmState?.pid === currentPid
+      ) {
+        debugLogger.logReasoning("PROMPT_WARMUP_CACHE_HIT", {
+          modelId,
+          promptKey: key.slice(0, 12),
+          systemPromptLength: systemPrompt.length,
+          userPromptLength: userPrompt.length,
         });
-
-        const pid = this.serverManager.process?.pid ?? null;
-        if (pid !== null && this.currentServerModelId === modelId) {
-          this.promptWarmState = { key, pid };
-        }
-        debugLogger.info("llama-server cleanup prompt pre-warmed", { modelId });
         return true;
-      })
-      .finally(() => {
-        this.promptWarmPending -= 1;
-        if (this.promptWarmPending === 0) this.promptWarmLatestKey = null;
+      }
+
+      await this._runInference(modelId, userPrompt, {
+        systemPrompt,
+        temperature: 0,
+        maxTokens: 1,
+        disableThinking,
+        isPromptWarmup: true,
       });
+
+      const pid = this.serverManager.process?.pid ?? null;
+      if (pid !== null && this.currentServerModelId === modelId) {
+        this.promptWarmState = { key, pid };
+      }
+      debugLogger.info("llama-server cleanup prompt pre-warmed", {
+        modelId,
+        promptKey: key.slice(0, 12),
+        systemPromptLength: systemPrompt.length,
+        userPromptLength: userPrompt.length,
+      });
+      return true;
+    }).finally(() => {
+      this.promptWarmPending -= 1;
+      if (this.promptWarmPending === 0) this.promptWarmLatestKey = null;
+    });
 
     this.promptWarmTail = warmup;
     return warmup;

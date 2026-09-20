@@ -81,6 +81,27 @@ test("local cleanup uses zero temperature without changing agent requests", asyn
     config: { temperature: 0.2 },
     ctx: context,
   });
+  await localProvider.call({
+    text: "Reuse this exact cleanup",
+    model: "qwen",
+    agentName: null,
+    config: {
+      inferenceScope: "dictationCleanup",
+      speculativeCleanupCacheKey: "cleanupIntensity=light",
+    },
+    ctx: context,
+  });
+  await localProvider.call({
+    text: "Use the app-specific style",
+    model: "qwen",
+    agentName: null,
+    config: {
+      inferenceScope: "dictationCleanup",
+      systemPrompt: "app-specific cleanup prompt",
+      speculativeCleanupCacheKey: "app=com.example.mail;cleanupTone=formal",
+    },
+    ctx: context,
+  });
 
   assert.equal(requests[0].config.temperature, 0);
   assert.equal(requests[0].config.systemPrompt, "cleanup prompt");
@@ -89,4 +110,14 @@ test("local cleanup uses zero temperature without changing agent requests", asyn
   assert.equal(requests[1].config.systemPrompt, "agent prompt");
   assert.equal(requests[1].text, "Do the task");
   assert.equal(requests[2].config.temperature, 0.2);
+  assert.deepEqual(requests[3].config.speculativeCleanup, {
+    eligible: true,
+    cacheKey: "cleanupIntensity=light",
+  });
+  assert.match(requests[4].text, /<transcript>\nUse the app-specific style\n<\/transcript>/);
+  assert.equal(requests[4].config.systemPrompt, "app-specific cleanup prompt");
+  assert.deepEqual(requests[4].config.speculativeCleanup, {
+    eligible: true,
+    cacheKey: "app=com.example.mail;cleanupTone=formal",
+  });
 });

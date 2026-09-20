@@ -637,7 +637,23 @@
         "recover": "Recupera",
         "recovered": "Recuperata"
       },
-      "retryTranslationMode": "Modalità Traduzione"
+      "retryTranslationMode": "Modalità Traduzione",
+      "searchLabel": "Cerca nella cronologia",
+      "searchPlaceholder": "Cerca in tutte le trascrizioni locali",
+      "dateFilterLabel": "Data",
+      "allDates": "Tutte le date",
+      "today": "Oggi",
+      "last7Days": "Ultimi 7 giorni",
+      "last30Days": "Ultimi 30 giorni",
+      "usage": "{{entries}} voci · {{words}} parole",
+      "matchingUsage": "{{entries}} voci corrispondenti · {{words}} parole",
+      "searchScope": "Cerca in tutta la cronologia locale",
+      "exportText": "Esporta testo",
+      "exportJson": "Esporta JSON",
+      "exportFailed": "Impossibile esportare la cronologia",
+      "searchFailed": "Impossibile cercare nella cronologia",
+      "noMatches": "Nessuna trascrizione corrispondente",
+      "loadMore": "Carica altro"
     },
     "cloudMigration": {
       "title": "Benvenuto in OpenWhispr Cloud",
@@ -1661,6 +1677,38 @@
       "description": "Correggi le trascrizioni, gestisci i comandi e risolvi gli errori preservando il tuo tono.",
       "enableTextCleanup": "Attiva correzione testo",
       "enableTextCleanupDescription": "L'IA rimuove parole superflue, corregge grammatica e punteggiatura",
+      "writing": {
+        "title": "Scrittura",
+        "description": "Scegli come pulire e formattare la dettatura.",
+        "availability": "I controlli di scrittura sono disponibili con provider di correzione locali e personalizzati.",
+        "intensity": "Correzione",
+        "intensityDescription": "Nessuna incolla la trascrizione grezza. Leggera mantiene il comportamento attuale. Rifinita esegue una revisione più completa.",
+        "intensityOptions": { "none": "Nessuna", "light": "Leggera", "polished": "Rifinita" },
+        "outputMode": "Output",
+        "outputModeDescription": "Formatta il contenuto dettato come dettatura, note con attività esplicite o bozza di e-mail.",
+        "outputModeOptions": {
+          "dictation": "Dettatura",
+          "notesToDos": "Note e attività",
+          "email": "E-mail"
+        },
+        "tone": "Tono",
+        "toneDescription": "Scegli un tono solo se vuoi che la correzione modifichi la formulazione.",
+        "toneOptions": { "default": "Predefinito", "formal": "Formale", "casual": "Informale" },
+        "backgroundCleanup": "Mantieni pronta la correzione",
+        "backgroundCleanupDescription": "Prepara la correzione tra le dettature, così è pronta quando finisci di parlare."
+      },
+      "perAppStyles": {
+        "title": "Stili per app",
+        "description": "Personalizza output e tono per le app in cui hai dettato. Su questo dispositivo vengono salvati solo il nome e l'identificatore dell'app.",
+        "availability": "Gli stili per app sono disponibili quando la correzione usa un modello locale.",
+        "empty": "Detta una volta in un'app per aggiungerla qui.",
+        "output": "Output",
+        "tone": "Tono",
+        "followGlobal": "Usa impostazione globale",
+        "outputFor": "Stile di output per {{app}}",
+        "toneFor": "Tono per {{app}}",
+        "remove": "Rimuovi {{app}}"
+      },
       "modes": {
         "openwhispr": "OpenWhispr Cloud",
         "providers": "Provider cloud",
@@ -1837,7 +1885,9 @@
         "autoPaste": "Incollaggio automatico",
         "autoPasteDescription": "Incolla automaticamente il testo trascritto nell'app attiva al termine della dettatura",
         "keepInClipboard": "Mantieni la trascrizione negli appunti",
-        "keepInClipboardDescription": "Mantieni il testo dettato negli appunti per poterlo incollare manualmente se necessario"
+        "keepInClipboardDescription": "Mantieni il testo dettato negli appunti per poterlo incollare manualmente se necessario",
+        "spokenEnter": "Invia con Invio pronunciato",
+        "spokenEnterDescription": "Su Mac, dì \"press Enter\" dopo una dettatura completa per incollarla e premere Invio nella stessa app."
       },
       "startup": {
         "launchAtLogin": "Avvia all'accesso",
@@ -2847,7 +2897,18 @@
       "queueFailed": "{{n}} non riusciti",
       "urlFileTooLarge": "Il file è troppo grande per essere scaricato. La dimensione massima è 500 MB.",
       "urlYoutubeBlocked": "YouTube sta bloccando temporaneamente i download dalla tua rete. Riprova tra poco.",
-      "customEndpointInvalid": "L'endpoint di trascrizione personalizzato non è configurato o non è valido. Aggiornalo nelle Impostazioni."
+      "customEndpointInvalid": "L'endpoint di trascrizione personalizzato non è configurato o non è valido. Aggiornalo nelle Impostazioni.",
+      "importTranscript": "Importa trascrizione",
+      "importDescription": "TXT, Markdown, SRT, VTT o JSON · fino a 10 MB · resta su questo dispositivo",
+      "importChooseFile": "Scegli file di trascrizione",
+      "importing": "Importazione...",
+      "importComplete": "Trascrizione importata",
+      "importDuplicate": "Questa trascrizione è già stata importata.",
+      "importTooLarge": "I file di trascrizione devono essere al massimo di 10 MB.",
+      "importUnsupported": "Scegli una trascrizione TXT, Markdown, SRT, VTT o JSON.",
+      "importMalformed": "Non è stato possibile leggere questo file di trascrizione.",
+      "importEmpty": "Il file di trascrizione è vuoto.",
+      "importFailed": "Non è stato possibile salvare la trascrizione importata."
     },
     "meeting": {
       "title": "Note delle riunioni",

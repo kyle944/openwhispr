@@ -93,6 +93,65 @@ const CALENDARS_TABLE_BY_PROVIDER = {
   microsoft: "microsoft_calendars",
 };
 
+const MAX_HISTORY_PAGE_SIZE = 100;
+const MAX_HISTORY_SEARCH_LENGTH = 500;
+
+function escapeLike(value) {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
+function normalizeHistoryDate(value) {
+  if (typeof value !== "string") return null;
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? value : null;
+}
+
+function normalizeHistoryQuery(options = {}) {
+  const source = options && typeof options === "object" ? options : {};
+  const query =
+    typeof source.query === "string" ? source.query.trim().slice(0, MAX_HISTORY_SEARCH_LENGTH) : "";
+  const limit = Number.isInteger(source.limit)
+    ? Math.min(Math.max(source.limit, 1), MAX_HISTORY_PAGE_SIZE)
+    : 50;
+  const offset = Number.isInteger(source.offset) ? Math.max(source.offset, 0) : 0;
+
+  return {
+    query,
+    includeDiscarded: source.includeDiscarded === true,
+    start: normalizeHistoryDate(source.start),
+    end: normalizeHistoryDate(source.end),
+    limit,
+    offset,
+  };
+}
+
+function buildTranscriptionHistoryWhere(options) {
+  const clauses = ["deleted_at IS NULL"];
+  const values = [];
+
+  if (!options.includeDiscarded) clauses.push("status != 'discarded'");
+  if (options.query) {
+    const term = `%${escapeLike(options.query)}%`;
+    clauses.push(
+      "(text LIKE ? ESCAPE '\\' COLLATE NOCASE OR raw_text LIKE ? ESCAPE '\\' COLLATE NOCASE)"
+    );
+    values.push(term, term);
+  }
+  if (options.start) {
+    clauses.push("timestamp >= ?");
+    values.push(options.start);
+  }
+  if (options.end) {
+    clauses.push("timestamp < ?");
+    values.push(options.end);
+  }
+
+  return { where: clauses.join(" AND "), values };
+}
+
+function countTextWords(text) {
+  return String(text || "").match(/[^\s]+/gu)?.length || 0;
+}
+
 class DatabaseManager {
   constructor() {
     this.db = null;
@@ -1083,6 +1142,61 @@ class DatabaseManager {
       return transcriptions;
     } catch (error) {
       debugLogger.error("Error getting transcriptions", { error: error.message }, "database");
+      throw error;
+    }
+  }
+
+  getTranscriptionHistoryPage(options = {}) {
+    try {
+      if (!this.db) throw new Error("Database not initialized");
+
+      const normalized = normalizeHistoryQuery(options);
+      const { where, values } = buildTranscriptionHistoryWhere(normalized);
+      const totalEntries = this.db
+        .prepare(`SELECT COUNT(*) AS count FROM transcriptions WHERE ${where}`)
+        .get(...values).count;
+
+      let totalWords = 0;
+      const wordRows = this.db
+        .prepare(`SELECT text FROM transcriptions WHERE ${where}`)
+        .iterate(...values);
+      for (const row of wordRows) totalWords += countTextWords(row.text);
+
+      const items = this.db
+        .prepare(
+          `SELECT * FROM transcriptions WHERE ${where} ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?`
+        )
+        .all(...values, normalized.limit, normalized.offset);
+
+      return { items, totalEntries, totalWords };
+    } catch (error) {
+      debugLogger.error(
+        "Error querying transcription history",
+        { error: error.message },
+        "database"
+      );
+      throw error;
+    }
+  }
+
+  getTranscriptionHistoryForExport(options = {}) {
+    try {
+      if (!this.db) throw new Error("Database not initialized");
+
+      const normalized = normalizeHistoryQuery(options);
+      const { where, values } = buildTranscriptionHistoryWhere(normalized);
+      return this.db
+        .prepare(
+          `SELECT id, text, raw_text, timestamp, created_at, status, route_kind
+           FROM transcriptions WHERE ${where} ORDER BY timestamp DESC, id DESC`
+        )
+        .all(...values);
+    } catch (error) {
+      debugLogger.error(
+        "Error preparing transcription history export",
+        { error: error.message },
+        "database"
+      );
       throw error;
     }
   }

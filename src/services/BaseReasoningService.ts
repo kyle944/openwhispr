@@ -23,6 +23,8 @@ export interface ReasoningConfig {
   requireCompleteOutput?: boolean;
   requiresAgent?: boolean;
   inferenceScope?: InferenceScope;
+  /** Exact cleanup-formatting identity used only for speculative local reuse. */
+  speculativeCleanupCacheKey?: string;
 }
 
 export abstract class BaseReasoningService {

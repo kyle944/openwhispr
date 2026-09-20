@@ -167,6 +167,55 @@ class ReasoningService extends BaseReasoningService {
     };
   }
 
+  private async beginLocalInferenceLease(
+    model: string,
+    signal: AbortSignal
+  ): Promise<{ port: number; leaseToken: string } | null> {
+    const api = window.electronAPI;
+    const request = api.llamaInferenceLeaseBegin(model);
+    const aborted = Symbol("local-inference-aborted");
+    let onAbort: (() => void) | undefined;
+    const abort = new Promise<typeof aborted>((resolve) => {
+      onAbort = () => resolve(aborted);
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    });
+
+    const result = await Promise.race([request, abort]);
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+    if (result === aborted) {
+      // IPC startup itself is not abortable. If it wins the queue later, end
+      // the lease immediately instead of orphaning a renderer-owned request.
+      void request
+        .then(async (lateResult) => {
+          if (lateResult.success && lateResult.leaseToken) {
+            await api.llamaInferenceLeaseEnd(lateResult.leaseToken);
+          }
+        })
+        .catch(() => {});
+      return null;
+    }
+    if (!result.success || !result.port || !result.leaseToken) {
+      const error = "error" in result ? result.error : undefined;
+      throw new Error(error || "Failed to start local model server");
+    }
+    if (signal.aborted) {
+      await api.llamaInferenceLeaseEnd(result.leaseToken);
+      return null;
+    }
+    return { port: result.port, leaseToken: result.leaseToken };
+  }
+
+  private async endLocalInferenceLease(leaseToken?: string): Promise<void> {
+    if (!leaseToken) return;
+    const result = await window.electronAPI.llamaInferenceLeaseEnd(leaseToken).catch(() => null);
+    if (result && !result.success) {
+      logger.logReasoning("LOCAL_INFERENCE_LEASE_RELEASE_FAILED", {
+        error: result.error || "Unknown lease release error",
+      });
+    }
+  }
+
   private async getApiKey(
     provider:
       "openai" | "anthropic" | "gemini" | "groq" | "tinfoil" | "custom" | "openrouter" | "corti"
@@ -547,6 +596,39 @@ class ReasoningService extends BaseReasoningService {
       lanUrl: config.lanUrl,
       customApiKey: config.customApiKey,
     });
+    const lease =
+      route.kind === "local"
+        ? await this.beginLocalInferenceLease(model, abortController.signal)
+        : null;
+    if (route.kind === "local" && !lease) return;
+
+    try {
+      yield* this.processTextStreamingRawWithServer(
+        messages,
+        model,
+        provider,
+        config,
+        abortController,
+        lease?.port
+      );
+    } finally {
+      await this.endLocalInferenceLease(lease?.leaseToken);
+    }
+  }
+
+  private async *processTextStreamingRawWithServer(
+    messages: Array<{ role: string; content: string }>,
+    model: string,
+    provider: string,
+    config: ReasoningConfig & { systemPrompt: string },
+    abortController: AbortController,
+    localPort?: number
+  ): AsyncGenerator<string, void, unknown> {
+    const route = resolveChatRoute({
+      provider,
+      lanUrl: config.lanUrl,
+      customApiKey: config.customApiKey,
+    });
     const mode: InferenceMode =
       route.kind === "self-hosted" ? "self-hosted" : route.kind === "local" ? "local" : "providers";
     assertAgentSessionAllowedByPolicy(provider, mode);
@@ -561,11 +643,8 @@ class ReasoningService extends BaseReasoningService {
       endpoint = buildApiUrl(baseUrl, "/chat/completions");
       apiKey = route.apiKey;
     } else if (isLocalProvider) {
-      const serverResult = await window.electronAPI.llamaServerStart(model);
-      if (!serverResult.success || !serverResult.port) {
-        throw new Error(serverResult.error || "Failed to start local model server");
-      }
-      endpoint = `http://127.0.0.1:${serverResult.port}/v1/chat/completions`;
+      if (!localPort) throw new Error("Local inference lease did not provide a server port");
+      endpoint = `http://127.0.0.1:${localPort}/v1/chat/completions`;
     } else {
       const access = await this.resolveByokAccess(provider, config);
       apiKey = access.apiKey;
@@ -796,150 +875,159 @@ class ReasoningService extends BaseReasoningService {
         : null;
     let apiKey = "";
     let baseURL: string | undefined;
-
-    if (isEnterprise) {
-      // Enterprise SDKs run in the main process; the model below proxies
-      // doStream over IPC, so no key or base URL is resolved here.
-    } else if (isLanChat) {
-      apiKey = route.apiKey;
-      baseURL = resolveSelfHostedOpenAIBase(route.baseUrl);
-    } else if (isLocalProvider) {
-      const serverResult = await window.electronAPI.llamaServerStart(model);
-      if (!serverResult.success || !serverResult.port) {
-        throw new Error(serverResult.error || "Failed to start local model server");
-      }
-      baseURL = `http://127.0.0.1:${serverResult.port}/v1`;
-    } else {
-      ({ apiKey, baseURL } = await this.resolveByokAccess(provider, config));
-    }
-    const aiProvider = isLocalProvider || isLanChat ? "local" : provider;
-    // OpenRouter ids are never in the local registry, so the supportsThinking
-    // exemption below can't apply — honor the toggle directly.
-    const openrouterDisableThinking = provider === "openrouter" && config.disableThinking === true;
-    // Resolving a Tinfoil model refreshes the registry, so read model config after it.
-    const aiModel = isEnterprise
-      ? createEnterpriseChatModel(provider as EnterpriseProvider, model, config.inferenceScope)
-      : await getAIModel(aiProvider, model, apiKey, baseURL, {
-          disableThinking: openrouterDisableThinking,
-        });
-
-    if (abortController.signal.aborted) {
-      yield { type: "done", finishReason: "stop" };
-      return;
-    }
-
-    const apiConfig = detectEndpointDialect(baseURL) ?? getOpenAiApiConfig(model, provider);
-    const modelDef = getCloudModel(model);
-    const userSuppressesThinking = config.disableThinking === true && !!modelDef?.supportsThinking;
-    const needsGroqDisableThinking =
-      provider === "groq" && (modelDef?.disableThinking || userSuppressesThinking);
-    const needsGeminiMinimalThinking = provider === "gemini" && userSuppressesThinking;
-    const providerOptions = {
-      // The effort value is a family fact: gpt-oss has no "none" (#1611).
-      ...(needsGroqDisableThinking
-        ? {
-            groq: {
-              reasoningEffort:
-                getModelFamilyConstraints(model)?.reasoningEffort?.suppressValue ?? "none",
-            },
-          }
-        : {}),
-      ...(needsGeminiMinimalThinking
-        ? { google: { thinkingConfig: { thinkingLevel: "minimal", includeThoughts: false } } }
-        : {}),
-    };
-    const hasProviderOptions = Object.keys(providerOptions).length > 0;
-
-    logger.logReasoning("AGENT_AI_SDK_STREAM_REQUEST", {
-      model,
-      provider,
-      hasTools: !!tools,
-      toolCount: tools ? Object.keys(tools).length : 0,
-      messageCount: messages.length,
-    });
-
-    const useTemperature = isLocalProvider || isLanChat || apiConfig.supportsTemperature;
-
-    const result = streamText({
-      model: aiModel,
-      messages: messages.map((m) => ({
-        role: m.role as "system" | "user" | "assistant",
-        content: m.content,
-      })) as import("ai").ModelMessage[],
-      tools: tools || undefined,
-      stopWhen: stepCountIs(tools ? ReasoningService.MAX_TOOL_STEPS : 1),
-      abortSignal: abortController.signal,
-      ...(useTemperature ? { temperature: config.temperature ?? 0.3 } : {}),
-      maxOutputTokens: config.maxTokens || 4096,
-      ...(hasProviderOptions ? { providerOptions } : {}),
-    });
-
-    let canFlushFilteredText = true;
-    const finishFilteredText = (): string => {
-      const trailing = filterThinkTags?.finish() ?? "";
-      return canFlushFilteredText ? trailing : "";
-    };
+    let localLease: { port: number; leaseToken?: string } | null = null;
 
     try {
-      for await (const chunk of result.fullStream) {
-        if (chunk.type === "text-delta") {
-          const text = filterThinkTags ? filterThinkTags(chunk.text) : chunk.text;
-          if (text) yield { type: "content", text };
-        } else if (chunk.type === "text-end" || chunk.type === "finish-step") {
-          const trailing = finishFilteredText();
-          if (trailing) yield { type: "content", text: trailing };
-        } else if (chunk.type === "tool-call") {
-          yield {
-            type: "tool_calls",
-            calls: [
-              {
-                id: chunk.toolCallId,
-                name: chunk.toolName,
-                arguments: JSON.stringify(chunk.input),
-              },
-            ],
-          };
-        } else if (chunk.type === "tool-result") {
-          const output = chunk.output;
-          const displayText =
-            typeof output === "string" ? output : output?.error ? String(output.error) : "Done";
-          yield {
-            type: "tool_result",
-            callId: chunk.toolCallId,
-            toolName: chunk.toolName,
-            displayText,
-          };
-        } else if (chunk.type === "abort") {
-          canFlushFilteredText = false;
-          finishFilteredText();
-        } else if (chunk.type === "error") {
-          // streamText reports provider failures as error parts and then ends
-          // the stream; swallowing them leaves callers with an empty reply and
-          // no terminal signal. Re-throw unless we aborted on purpose.
-          canFlushFilteredText = false;
-          finishFilteredText();
-          if (!abortController.signal.aborted) {
-            const cause = (chunk as { error?: unknown }).error;
-            throw cause instanceof Error ? cause : new Error(String(cause ?? "Stream failed"));
-          }
-        } else if (chunk.type === "finish") {
-          const trailing = finishFilteredText();
-          if (trailing) yield { type: "content", text: trailing };
-          yield { type: "done", finishReason: chunk.finishReason };
+      if (isEnterprise) {
+        // Enterprise SDKs run in the main process; the model below proxies
+        // doStream over IPC, so no key or base URL is resolved here.
+      } else if (isLanChat) {
+        apiKey = route.apiKey;
+        baseURL = resolveSelfHostedOpenAIBase(route.baseUrl);
+      } else if (isLocalProvider) {
+        localLease = await this.beginLocalInferenceLease(model, abortController.signal);
+        if (!localLease) {
+          yield { type: "done", finishReason: "stop" };
+          return;
         }
+        baseURL = `http://127.0.0.1:${localLease.port}/v1`;
+      } else {
+        ({ apiKey, baseURL } = await this.resolveByokAccess(provider, config));
       }
-    } catch (error) {
-      canFlushFilteredText = false;
-      finishFilteredText();
+      const aiProvider = isLocalProvider || isLanChat ? "local" : provider;
+      // OpenRouter ids are never in the local registry, so the supportsThinking
+      // exemption below can't apply — honor the toggle directly.
+      const openrouterDisableThinking =
+        provider === "openrouter" && config.disableThinking === true;
+      // Resolving a Tinfoil model refreshes the registry, so read model config after it.
+      const aiModel = isEnterprise
+        ? createEnterpriseChatModel(provider as EnterpriseProvider, model, config.inferenceScope)
+        : await getAIModel(aiProvider, model, apiKey, baseURL, {
+            disableThinking: openrouterDisableThinking,
+          });
+
       if (abortController.signal.aborted) {
         yield { type: "done", finishReason: "stop" };
         return;
       }
-      throw error;
-    } finally {
-      if (this.streamAbortController === abortController) {
-        this.streamAbortController = null;
+
+      const apiConfig = detectEndpointDialect(baseURL) ?? getOpenAiApiConfig(model, provider);
+      const modelDef = getCloudModel(model);
+      const userSuppressesThinking =
+        config.disableThinking === true && !!modelDef?.supportsThinking;
+      const needsGroqDisableThinking =
+        provider === "groq" && (modelDef?.disableThinking || userSuppressesThinking);
+      const needsGeminiMinimalThinking = provider === "gemini" && userSuppressesThinking;
+      const providerOptions = {
+        // The effort value is a family fact: gpt-oss has no "none" (#1611).
+        ...(needsGroqDisableThinking
+          ? {
+              groq: {
+                reasoningEffort:
+                  getModelFamilyConstraints(model)?.reasoningEffort?.suppressValue ?? "none",
+              },
+            }
+          : {}),
+        ...(needsGeminiMinimalThinking
+          ? { google: { thinkingConfig: { thinkingLevel: "minimal", includeThoughts: false } } }
+          : {}),
+      };
+      const hasProviderOptions = Object.keys(providerOptions).length > 0;
+
+      logger.logReasoning("AGENT_AI_SDK_STREAM_REQUEST", {
+        model,
+        provider,
+        hasTools: !!tools,
+        toolCount: tools ? Object.keys(tools).length : 0,
+        messageCount: messages.length,
+      });
+
+      const useTemperature = isLocalProvider || isLanChat || apiConfig.supportsTemperature;
+
+      const result = streamText({
+        model: aiModel,
+        messages: messages.map((m) => ({
+          role: m.role as "system" | "user" | "assistant",
+          content: m.content,
+        })) as import("ai").ModelMessage[],
+        tools: tools || undefined,
+        stopWhen: stepCountIs(tools ? ReasoningService.MAX_TOOL_STEPS : 1),
+        abortSignal: abortController.signal,
+        ...(useTemperature ? { temperature: config.temperature ?? 0.3 } : {}),
+        maxOutputTokens: config.maxTokens || 4096,
+        ...(hasProviderOptions ? { providerOptions } : {}),
+      });
+
+      let canFlushFilteredText = true;
+      const finishFilteredText = (): string => {
+        const trailing = filterThinkTags?.finish() ?? "";
+        return canFlushFilteredText ? trailing : "";
+      };
+
+      try {
+        for await (const chunk of result.fullStream) {
+          if (chunk.type === "text-delta") {
+            const text = filterThinkTags ? filterThinkTags(chunk.text) : chunk.text;
+            if (text) yield { type: "content", text };
+          } else if (chunk.type === "text-end" || chunk.type === "finish-step") {
+            const trailing = finishFilteredText();
+            if (trailing) yield { type: "content", text: trailing };
+          } else if (chunk.type === "tool-call") {
+            yield {
+              type: "tool_calls",
+              calls: [
+                {
+                  id: chunk.toolCallId,
+                  name: chunk.toolName,
+                  arguments: JSON.stringify(chunk.input),
+                },
+              ],
+            };
+          } else if (chunk.type === "tool-result") {
+            const output = chunk.output;
+            const displayText =
+              typeof output === "string" ? output : output?.error ? String(output.error) : "Done";
+            yield {
+              type: "tool_result",
+              callId: chunk.toolCallId,
+              toolName: chunk.toolName,
+              displayText,
+            };
+          } else if (chunk.type === "abort") {
+            canFlushFilteredText = false;
+            finishFilteredText();
+          } else if (chunk.type === "error") {
+            // streamText reports provider failures as error parts and then ends
+            // the stream; swallowing them leaves callers with an empty reply and
+            // no terminal signal. Re-throw unless we aborted on purpose.
+            canFlushFilteredText = false;
+            finishFilteredText();
+            if (!abortController.signal.aborted) {
+              const cause = (chunk as { error?: unknown }).error;
+              throw cause instanceof Error ? cause : new Error(String(cause ?? "Stream failed"));
+            }
+          } else if (chunk.type === "finish") {
+            const trailing = finishFilteredText();
+            if (trailing) yield { type: "content", text: trailing };
+            yield { type: "done", finishReason: chunk.finishReason };
+          }
+        }
+      } catch (error) {
+        canFlushFilteredText = false;
+        finishFilteredText();
+        if (abortController.signal.aborted) {
+          yield { type: "done", finishReason: "stop" };
+          return;
+        }
+        throw error;
+      } finally {
+        if (this.streamAbortController === abortController) {
+          this.streamAbortController = null;
+        }
       }
+    } finally {
+      await this.endLocalInferenceLease(localLease?.leaseToken);
+      if (this.streamAbortController === abortController) this.streamAbortController = null;
     }
   }
 

@@ -1,7 +1,11 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-const { expandSnippets, getDictionaryHintWords } = require("../../src/utils/snippets.ts");
+const {
+  expandSnippets,
+  expandFinalDictationSnippets,
+  getDictionaryHintWords,
+} = require("../../src/utils/snippets.ts");
 
 test("expands a trigger containing Turkish capital İ", () => {
   const snippets = [{ trigger: "İmza", replacement: "Best regards,\nUmut" }];
@@ -74,6 +78,52 @@ test("plain ASCII triggers still fold case both ways", () => {
 test("multiple occurrences and unmatched text are preserved", () => {
   const snippets = [{ trigger: "İmza", replacement: "X" }];
   assert.equal(expandSnippets("İmza and imza, done", snippets), "X and X, done");
+});
+
+test("final ordinary dictation expands after cleanup", () => {
+  const snippets = [{ trigger: "my signoff", replacement: "Best regards,\nKyle" }];
+  assert.equal(
+    expandFinalDictationSnippets("Draft complete. my signoff", snippets, {
+      routeKind: "cleanup",
+    }),
+    "Draft complete. Best regards,\nKyle"
+  );
+});
+
+test("final snippet expansion is single-pass and never recursive", () => {
+  const snippets = [
+    { trigger: "first", replacement: "second" },
+    { trigger: "second", replacement: "expanded twice" },
+  ];
+  assert.equal(expandFinalDictationSnippets("first", snippets, { routeKind: "skip" }), "second");
+});
+
+test("agent output and explicit assistant commands keep exact snippet words", () => {
+  const snippets = [{ trigger: "my signoff", replacement: "Best regards,\nKyle" }];
+  assert.equal(
+    expandFinalDictationSnippets("Use my signoff in a poem", snippets, { routeKind: "agent" }),
+    "Use my signoff in a poem"
+  );
+  assert.equal(
+    expandFinalDictationSnippets("Use my signoff in a poem", snippets, {
+      voiceAgentRequested: true,
+    }),
+    "Use my signoff in a poem"
+  );
+});
+
+test("selection edits and translations keep the model's exact result", () => {
+  const snippets = [{ trigger: "my signoff", replacement: "Best regards,\nKyle" }];
+  assert.equal(
+    expandFinalDictationSnippets("Replace with my signoff", snippets, { selectionEdit: true }),
+    "Replace with my signoff"
+  );
+  assert.equal(
+    expandFinalDictationSnippets("Translated my signoff", snippets, {
+      routeKind: "translation",
+    }),
+    "Translated my signoff"
+  );
 });
 
 test("expandSnippets leaves the transcript unchanged when snippets is nullish", () => {

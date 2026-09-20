@@ -1,4 +1,5 @@
 import { resolvePrompt } from "./prompts/index";
+import type { WritingPreferences } from "../utils/writingPreferences";
 
 export {
   resolvePrompt,
@@ -14,9 +15,16 @@ export function getCleanupSystemPrompt(
   agentName: string | null,
   customDictionary?: string[],
   language?: string,
-  uiLanguage?: string
+  uiLanguage?: string,
+  writingPreferences?: Partial<WritingPreferences>
 ): string {
-  return resolvePrompt("cleanup", { agentName, language, customDictionary, uiLanguage });
+  return resolvePrompt("cleanup", {
+    agentName,
+    language,
+    customDictionary,
+    uiLanguage,
+    writingPreferences,
+  });
 }
 
 export function getWordBoost(customDictionary?: string[]): string[] {

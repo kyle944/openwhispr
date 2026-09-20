@@ -3,6 +3,10 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { en as enPrompts } from "../../locales/prompts";
 import { getLanguageInstruction } from "../../utils/languageSupport";
 import { appendLearnedCorrectionExamples } from "../../utils/learnedCorrectionExamples";
+import {
+  appendWritingPreferencesSuffix,
+  type WritingPreferences,
+} from "../../utils/writingPreferences";
 import { PROMPT_KINDS, type PromptKind } from "./registry";
 
 export { PROMPT_KINDS, PROMPT_KIND_LIST, type PromptKind } from "./registry";
@@ -13,13 +17,21 @@ export interface ResolvePromptOptions {
   language?: string;
   customDictionary?: string[];
   targetLanguageLabel?: string;
+  /** Session-resolved cleanup preferences, including any exact per-app override. */
+  writingPreferences?: Partial<WritingPreferences>;
 }
 
 export function resolvePrompt(kind: PromptKind, opts: ResolvePromptOptions): string {
   const custom = useSettingsStore.getState().customPrompts[kind];
   const template = custom || getDefaultPromptText(kind, opts.uiLanguage);
   const resolved = applySubstitutions(template, opts);
-  return kind === "cleanup" ? appendLearnedCorrectionExamples(resolved) : resolved;
+  if (kind !== "cleanup") return resolved;
+
+  const settings = useSettingsStore.getState();
+  return appendWritingPreferencesSuffix(
+    appendLearnedCorrectionExamples(resolved),
+    opts.writingPreferences ?? settings
+  );
 }
 
 export function getDefaultPromptText(kind: PromptKind, uiLanguage?: string): string {

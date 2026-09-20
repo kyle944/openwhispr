@@ -247,6 +247,60 @@ test("pasteText waits for prior clipboard restoration before starting the next p
   assert.deepEqual(events, ["start:first", "end:first", "start:second", "end:second"]);
 });
 
+test("targeted macOS paste requests Return only through the native PID seam", async () => {
+  const spawnCalls = [];
+  const TestClipboardManager = loadClipboardManager({
+    spawn: createSpawn(spawnCalls, [0], { stdout: ["PASTE_OK 42 SUBMITTED\n"] }),
+  });
+  const manager = new TestClipboardManager();
+  manager.resolveFastPasteBinary = () => "/tmp/macos-fast-paste";
+
+  const result = await manager.pasteMacOS(null, { targetPid: 42, submit: true });
+
+  assert.deepEqual(spawnCalls, [
+    { command: "/tmp/macos-fast-paste", args: ["--target-pid", "42", "--submit"] },
+  ]);
+  assert.equal(result.submitted, true);
+  await result.restoreComplete;
+});
+
+test("targeted macOS paste keeps the paste but reports a focus-mismatch submission skip", async () => {
+  const spawnCalls = [];
+  const TestClipboardManager = loadClipboardManager({
+    spawn: createSpawn(spawnCalls, [0], {
+      stdout: ["PASTE_OK 42 SUBMIT_SKIPPED target_changed\n"],
+    }),
+  });
+  const manager = new TestClipboardManager();
+  manager.resolveFastPasteBinary = () => "/tmp/macos-fast-paste";
+
+  const result = await manager.pasteMacOS(null, { targetPid: 42, submit: true });
+
+  assert.equal(result.submitted, false);
+  assert.equal(result.submissionCode, "target_changed");
+  assert.equal(spawnCalls.length, 1, "focus mismatch must not invoke a generic-focus fallback");
+});
+
+test("failed targeted macOS submit never falls back to an unfocused paste command", async () => {
+  const spawnCalls = [];
+  const TestClipboardManager = loadClipboardManager({ spawn: createSpawn(spawnCalls, [4]) });
+  const manager = new TestClipboardManager();
+  manager.resolveFastPasteBinary = () => "/tmp/macos-fast-paste";
+  let fallbackCalled = false;
+  manager.pasteMacOSWithOsascript = async () => {
+    fallbackCalled = true;
+  };
+
+  await assert.rejects(
+    manager.pasteMacOS(null, { targetPid: 42, submit: true }),
+    /Paste target could not be activated/
+  );
+  assert.equal(fallbackCalled, false);
+  assert.deepEqual(spawnCalls, [
+    { command: "/tmp/macos-fast-paste", args: ["--target-pid", "42", "--submit"] },
+  ]);
+});
+
 test("pasteWithFastPaste passes --restore-window <hwnd> when targetWindow is set (#859)", async () => {
   const spawnCalls = [];
   const TestClipboardManager = loadClipboardManager({

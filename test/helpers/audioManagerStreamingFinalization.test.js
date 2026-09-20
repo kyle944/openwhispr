@@ -117,6 +117,182 @@ test("streaming silence publishes its empty outcome only after processing settle
   assert.deepEqual(order, ["processing", "idle", "empty"]);
 });
 
+test("batch capture keeps the mic live until the preview worklet flushes", async (t) => {
+  const AudioManager = await loadManagerClass(t);
+  const events = [];
+  let stopped = false;
+  const recorder = { mimeType: "audio/webm", state: "recording" };
+  const micStream = {
+    getTracks: () => [
+      {
+        stop() {
+          stopped = true;
+          events.push("track-stopped");
+        },
+      },
+    ],
+  };
+  const manager = Object.assign(Object.create(AudioManager.prototype), {
+    _receivedAudioData: false,
+    _localSpeechGateState: null,
+    _rotatingBatchRecorder: null,
+    recordingMimeType: "audio/webm",
+    micRecovery: { started: false },
+    _markCaptureStreamReleased() {
+      events.push("capture-released");
+    },
+    async finalizeBatchRecording(_segment, { releaseCapture }) {
+      events.push(stopped ? "finalize-after-stop" : "finalize-with-live-mic");
+      releaseCapture();
+    },
+  });
+
+  manager.createBatchRecorder(micStream, { recorder, chunks: [new Blob(["voice"])] });
+  await recorder.onstop();
+
+  assert.deepEqual(events, ["finalize-with-live-mic", "track-stopped", "capture-released"]);
+});
+
+test("a last quiet word flushes before capture release and recognizer finish", async (t) => {
+  const AudioManager = await loadManagerClass(t);
+  const events = [];
+  const flushResolvers = new WeakMap();
+  const processor = {
+    port: {
+      postMessage(message) {
+        events.push(message);
+        queueMicrotask(() => {
+          events.push("final-pcm");
+          flushResolvers.get(processor)?.();
+        });
+      },
+    },
+    disconnect() {
+      events.push("processor-disconnected");
+    },
+  };
+  const manager = Object.assign(Object.create(AudioManager.prototype), {
+    _previewProcessor: processor,
+    _previewSource: {
+      disconnect() {
+        events.push("source-disconnected");
+      },
+    },
+    _previewAudioContext: {
+      close() {
+        events.push("context-closed");
+        return Promise.resolve();
+      },
+    },
+    _previewFlushResolvers: flushResolvers,
+  });
+  window.electronAPI.stopDictationPreview = () => {
+    events.push("recognizer-finish");
+    return Promise.resolve({ success: true });
+  };
+
+  await manager.cleanupPreview({
+    onCaptureFlushed: () => events.push("capture-released"),
+  });
+
+  assert.deepEqual(events, [
+    "stop",
+    "final-pcm",
+    "processor-disconnected",
+    "source-disconnected",
+    "context-closed",
+    "capture-released",
+    "recognizer-finish",
+  ]);
+});
+
+test("overlapping preview cleanups resolve only for their own worklet", async (t) => {
+  const AudioManager = await loadManagerClass(t);
+  const flushResolvers = new WeakMap();
+  const sentinels = new Map();
+  const released = [];
+  const createProcessor = (name) => {
+    const processor = {
+      port: {
+        postMessage() {
+          sentinels.set(name, () => flushResolvers.get(processor)?.());
+        },
+      },
+      disconnect() {},
+    };
+    return processor;
+  };
+  const manager = Object.assign(Object.create(AudioManager.prototype), {
+    _previewFlushResolvers: flushResolvers,
+  });
+  window.electronAPI.stopDictationPreview = async () => ({ success: true });
+
+  const processorA = createProcessor("A");
+  manager._previewProcessor = processorA;
+  const cleanupA = manager.cleanupPreview({ onCaptureFlushed: () => released.push("A") });
+
+  const processorB = createProcessor("B");
+  manager._previewProcessor = processorB;
+  const cleanupB = manager.cleanupPreview({ onCaptureFlushed: () => released.push("B") });
+
+  sentinels.get("A")();
+  await cleanupA;
+  assert.deepEqual(released, ["A"]);
+
+  // A duplicate late sentinel must not satisfy B's independent flush wait.
+  sentinels.get("A")();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(released, ["A"]);
+
+  sentinels.get("B")();
+  await cleanupB;
+  assert.deepEqual(released, ["A", "B"]);
+});
+
+test("preview stop failure clears its resolver and watchdog before releasing capture", async (t) => {
+  const AudioManager = await loadManagerClass(t);
+  const flushResolvers = new WeakMap();
+  const events = [];
+  const processor = {
+    port: {
+      postMessage() {
+        throw new Error("worklet port closed");
+      },
+    },
+    disconnect() {
+      events.push("processor-disconnected");
+    },
+  };
+  const manager = Object.assign(Object.create(AudioManager.prototype), {
+    _previewProcessor: processor,
+    _previewSource: {
+      disconnect() {
+        events.push("source-disconnected");
+      },
+    },
+    _previewAudioContext: {
+      close() {
+        events.push("context-closed");
+        return Promise.resolve();
+      },
+    },
+    _previewFlushResolvers: flushResolvers,
+  });
+
+  await assert.rejects(
+    manager.cleanupPreview({ onCaptureFlushed: () => events.push("capture-released") }),
+    /worklet port closed/
+  );
+
+  assert.equal(flushResolvers.has(processor), false);
+  assert.deepEqual(events, [
+    "processor-disconnected",
+    "source-disconnected",
+    "context-closed",
+    "capture-released",
+  ]);
+});
+
 test("cancelling an active streaming recording discards it without publishing text", async (t) => {
   const AudioManager = await loadManagerClass(t);
   const { manager, states, getProviderStopCalls } = createFinalizingManager(AudioManager);

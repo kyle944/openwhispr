@@ -139,6 +139,21 @@ export interface TranscriptionItem {
   deleted_at: string | null;
 }
 
+export interface TranscriptionHistoryQuery {
+  query?: string;
+  includeDiscarded?: boolean;
+  start?: string;
+  end?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface TranscriptionHistoryPage {
+  items: TranscriptionItem[];
+  totalEntries: number;
+  totalWords: number;
+}
+
 export interface NoteItem {
   id: number;
   title: string;
@@ -921,8 +936,10 @@ declare global {
           fromStreaming?: boolean;
           restoreClipboard?: boolean;
           allowClipboardFallback?: boolean;
+          /** macOS-only, requires the main process's captured target PID. */
+          submit?: boolean;
         }
-      ) => Promise<void>;
+      ) => Promise<{ success: boolean; submitted?: boolean; submissionCode?: string }>;
       captureSelectedText?: () => Promise<
         | {
             status: "selected";
@@ -955,7 +972,12 @@ declare global {
       }>;
       hideWindow: () => Promise<void>;
       showDictationPanel: () => Promise<void>;
-      captureDictationTarget?: () => Promise<{ success: boolean; pid: number | null }>;
+      captureDictationTarget?: () => Promise<{
+        success: boolean;
+        pid: number | null;
+        bundleId: string | null;
+        appName: string | null;
+      }>;
       onToggleDictation: (callback: () => void) => () => void;
       onToggleVoiceAgent?: (callback: () => void) => () => void;
       onToggleTranslation?: (callback: () => void) => () => void;
@@ -1038,6 +1060,13 @@ declare global {
         limit?: number,
         options?: { includeDiscarded?: boolean }
       ) => Promise<TranscriptionItem[]>;
+      queryTranscriptionHistory: (
+        options?: TranscriptionHistoryQuery
+      ) => Promise<TranscriptionHistoryPage>;
+      exportTranscriptionHistory: (
+        options: TranscriptionHistoryQuery,
+        format: "txt" | "json"
+      ) => Promise<{ success: boolean; count?: number; error?: string }>;
       clearTranscriptions: () => Promise<{ cleared: number; success: boolean }>;
       deleteTranscription: (id: number) => Promise<{ success: boolean }>;
       getTranscriptionById: (id: number) => Promise<TranscriptionItem | null>;
@@ -1367,6 +1396,7 @@ declare global {
         systemPrompt: string;
         userPrompt: string;
         disableThinking: boolean;
+        cacheKey?: string;
       }) => Promise<{ success: boolean }>;
 
       // Clipboard operations
@@ -1568,6 +1598,12 @@ declare global {
       llamaServerStart: (
         modelId: string
       ) => Promise<{ success: boolean; port?: number; error?: string }>;
+      llamaInferenceLeaseBegin: (
+        modelId: string
+      ) => Promise<
+        { success: true; port: number; leaseToken: string } | { success: false; error?: string }
+      >;
+      llamaInferenceLeaseEnd: (leaseToken: string) => Promise<{ success: boolean; error?: string }>;
       llamaServerStop: () => Promise<{ success: boolean; error?: string }>;
       llamaServerStatus: () => Promise<LlamaServerStatus>;
       llamaGpuReset: () => Promise<{ success: boolean; error?: string }>;
@@ -2746,6 +2782,14 @@ declare global {
         model: string;
         language?: string;
         display?: boolean;
+        speculativeCleanup?: boolean;
+        speculativeCleanupPayload?: {
+          modelId: string;
+          systemPrompt: string;
+          userPrompt: string;
+          disableThinking: boolean;
+          cacheKey?: string;
+        };
       }) => Promise<{ success: boolean }>;
       stopDictationPreview?: (opts?: {
         showCleanup?: boolean;

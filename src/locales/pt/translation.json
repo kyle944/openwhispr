@@ -616,7 +616,23 @@
         "recover": "Recuperar",
         "recovered": "Recuperada"
       },
-      "retryTranslationMode": "Modo de Tradução"
+      "retryTranslationMode": "Modo de Tradução",
+      "searchLabel": "Pesquisar histórico",
+      "searchPlaceholder": "Pesquisar todas as transcrições locais",
+      "dateFilterLabel": "Data",
+      "allDates": "Todas as datas",
+      "today": "Hoje",
+      "last7Days": "Últimos 7 dias",
+      "last30Days": "Últimos 30 dias",
+      "usage": "{{entries}} entradas · {{words}} palavras",
+      "matchingUsage": "{{entries}} entradas correspondentes · {{words}} palavras",
+      "searchScope": "Pesquisa todo o histórico local",
+      "exportText": "Exportar texto",
+      "exportJson": "Exportar JSON",
+      "exportFailed": "Não foi possível exportar o histórico",
+      "searchFailed": "Não foi possível pesquisar o histórico",
+      "noMatches": "Nenhuma transcrição correspondente",
+      "loadMore": "Carregar mais"
     },
     "cloudMigration": {
       "title": "Boas-vindas ao OpenWhispr Cloud",
@@ -1640,6 +1656,38 @@
       "description": "Limpe transcrições, processe comandos e corrija erros preservando seu tom de voz.",
       "enableTextCleanup": "Ativar limpeza de texto",
       "enableTextCleanupDescription": "A IA remove palavras de preenchimento, corrige gramática e pontuação",
+      "writing": {
+        "title": "Escrita",
+        "description": "Escolha como o ditado é limpo e formatado.",
+        "availability": "Os controles de escrita estão disponíveis com provedores de limpeza locais e personalizados.",
+        "intensity": "Limpeza",
+        "intensityDescription": "Nenhuma cola a transcrição bruta. Leve mantém o comportamento atual. Polida faz uma edição mais completa.",
+        "intensityOptions": { "none": "Nenhuma", "light": "Leve", "polished": "Polida" },
+        "outputMode": "Saída",
+        "outputModeDescription": "Formate o conteúdo ditado como ditado, notas com tarefas explícitas ou rascunho de e-mail.",
+        "outputModeOptions": {
+          "dictation": "Ditado",
+          "notesToDos": "Notas e tarefas",
+          "email": "E-mail"
+        },
+        "tone": "Tom",
+        "toneDescription": "Escolha um tom apenas se quiser que a limpeza ajuste a redação.",
+        "toneOptions": { "default": "Padrão", "formal": "Formal", "casual": "Casual" },
+        "backgroundCleanup": "Manter a limpeza pronta",
+        "backgroundCleanupDescription": "Prepara a limpeza entre ditados para que esteja pronta quando você terminar de falar."
+      },
+      "perAppStyles": {
+        "title": "Estilos por aplicativo",
+        "description": "Personalize a saída e o tom para os aplicativos em que você ditou. Somente o nome e o identificador do aplicativo são armazenados neste dispositivo.",
+        "availability": "Os estilos por aplicativo estão disponíveis quando a limpeza usa um modelo local.",
+        "empty": "Dite uma vez em um aplicativo para adicioná-lo aqui.",
+        "output": "Saída",
+        "tone": "Tom",
+        "followGlobal": "Usar configuração global",
+        "outputFor": "Estilo de saída para {{app}}",
+        "toneFor": "Tom para {{app}}",
+        "remove": "Remover {{app}}"
+      },
       "modes": {
         "openwhispr": "OpenWhispr Cloud",
         "providers": "Provedores na nuvem",
@@ -1816,7 +1864,9 @@
         "autoPaste": "Colagem automática",
         "autoPasteDescription": "Colar automaticamente o texto transcrito no aplicativo ativo ao finalizar o ditado",
         "keepInClipboard": "Manter transcrição na área de transferência",
-        "keepInClipboardDescription": "Manter o texto ditado na área de transferência para poder colar manualmente se necessário"
+        "keepInClipboardDescription": "Manter o texto ditado na área de transferência para poder colar manualmente se necessário",
+        "spokenEnter": "Enviar com Enter falado",
+        "spokenEnterDescription": "No Mac, diga \"press Enter\" após um ditado concluído para colá-lo e pressionar Return no mesmo app."
       },
       "startup": {
         "launchAtLogin": "Iniciar ao fazer login",
@@ -2847,7 +2897,18 @@
       "queueFailed": "{{n}} com falha",
       "urlFileTooLarge": "O arquivo é grande demais para baixar. O tamanho máximo é 500 MB.",
       "urlYoutubeBlocked": "O YouTube está bloqueando temporariamente downloads da sua rede. Tente novamente em instantes.",
-      "customEndpointInvalid": "O endpoint de transcrição personalizado não está configurado ou é inválido. Atualize-o nas Configurações."
+      "customEndpointInvalid": "O endpoint de transcrição personalizado não está configurado ou é inválido. Atualize-o nas Configurações.",
+      "importTranscript": "Importar transcrição",
+      "importDescription": "TXT, Markdown, SRT, VTT ou JSON · até 10 MB · permanece neste dispositivo",
+      "importChooseFile": "Escolher arquivo de transcrição",
+      "importing": "Importando...",
+      "importComplete": "Transcrição importada",
+      "importDuplicate": "Esta transcrição já foi importada.",
+      "importTooLarge": "Os arquivos de transcrição devem ter no máximo 10 MB.",
+      "importUnsupported": "Escolha uma transcrição TXT, Markdown, SRT, VTT ou JSON.",
+      "importMalformed": "Não foi possível ler este arquivo de transcrição.",
+      "importEmpty": "O arquivo de transcrição está vazio.",
+      "importFailed": "Não foi possível salvar a transcrição importada."
     },
     "meeting": {
       "title": "Notas de reunião",

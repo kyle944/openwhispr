@@ -129,6 +129,113 @@ test("raw self-hosted streaming filters split tags and flushes visible trailing 
   assert.equal(await collectRawText(stream), "Answer<");
 });
 
+test("raw local streaming holds and releases its inference lease", async (t) => {
+  const leaseEnds = [];
+  const { reasoningService } = await loadReasoningService(t, "openwhispr-raw-local-lease-test-", {
+    window: {
+      electronAPI: {
+        llamaInferenceLeaseBegin: async (model) => ({
+          success: true,
+          port: 11434,
+          leaseToken: `lease:${model}`,
+        }),
+        llamaInferenceLeaseEnd: async (leaseToken) => {
+          leaseEnds.push(leaseToken);
+          return { success: true };
+        },
+      },
+    },
+  });
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => createRawSseResponse(["local answer"]);
+
+  const stream = reasoningService.processTextStreaming(
+    [{ role: "user", content: "hello" }],
+    "qwen3-4b-q4_k_m",
+    "local",
+    { systemPrompt: "Answer the user.", disableThinking: true }
+  );
+
+  assert.equal(await collectRawText(stream), "local answer");
+  assert.deepEqual(leaseEnds, ["lease:qwen3-4b-q4_k_m"]);
+});
+
+test("local streaming rejects a successful lease without a release token", async (t) => {
+  const { reasoningService } = await loadReasoningService(
+    t,
+    "openwhispr-malformed-local-lease-test-",
+    {
+      window: {
+        electronAPI: {
+          llamaInferenceLeaseBegin: async () => ({ success: true, port: 11434 }),
+          llamaInferenceLeaseEnd: async () => ({ success: true }),
+        },
+      },
+    }
+  );
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  let fetchCalls = 0;
+  globalThis.fetch = async () => {
+    fetchCalls += 1;
+    return createRawSseResponse(["must not run"]);
+  };
+
+  const stream = reasoningService.processTextStreaming(
+    [{ role: "user", content: "hello" }],
+    "qwen3-4b-q4_k_m",
+    "local",
+    { systemPrompt: "Answer the user.", disableThinking: true }
+  );
+
+  await assert.rejects(collectRawText(stream), /Failed to start local model server/);
+  assert.equal(fetchCalls, 0);
+});
+
+test("AI SDK local streaming holds and releases its inference lease", async (t) => {
+  const leaseEnds = [];
+  const { reasoningService } = await loadReasoningService(
+    t,
+    "openwhispr-ai-sdk-local-lease-test-",
+    {
+      window: {
+        electronAPI: {
+          llamaInferenceLeaseBegin: async () => ({
+            success: true,
+            port: 11434,
+            leaseToken: "ai-sdk-lease",
+          }),
+          llamaInferenceLeaseEnd: async (leaseToken) => {
+            leaseEnds.push(leaseToken);
+            return { success: true };
+          },
+        },
+      },
+    }
+  );
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => createOpenAiSseResponse(["local tool answer"]);
+
+  const stream = reasoningService.processTextStreamingAI(
+    [{ role: "user", content: "hello" }],
+    "qwen3-4b-q4_k_m",
+    "local",
+    { systemPrompt: "Answer the user.", disableThinking: true },
+    {}
+  );
+
+  assert.equal(await collectAgentText(stream), "local tool answer");
+  assert.deepEqual(leaseEnds, ["ai-sdk-lease"]);
+});
+
 test("raw self-hosted streaming flushes visible trailing text at body EOF", async (t) => {
   const { reasoningService } = await loadReasoningService(
     t,
@@ -293,15 +400,20 @@ test("cancelling during local model setup stops before streaming begins", async 
   const serverReady = new Promise((resolve) => {
     resolveServer = resolve;
   });
+  const leaseEnds = [];
   const { reasoningService } = await loadReasoningService(
     t,
     "openwhispr-model-setup-cancel-test-",
     {
       window: {
         electronAPI: {
-          llamaServerStart: () => {
+          llamaInferenceLeaseBegin: () => {
             serverStarted = true;
             return serverReady;
+          },
+          llamaInferenceLeaseEnd: async (leaseToken) => {
+            leaseEnds.push(leaseToken);
+            return { success: true };
           },
         },
       },
@@ -325,13 +437,15 @@ test("cancelling during local model setup stops before streaming begins", async 
   assert.equal(serverStarted, true, "fixture setup: local model setup must be pending");
 
   reasoningService.cancelActiveStream();
-  resolveServer({ success: true, port: 11434 });
+  resolveServer({ success: true, port: 11434, leaseToken: "late-lease" });
 
   assert.deepEqual(await first, {
     value: { type: "done", finishReason: "stop" },
     done: false,
   });
   assert.equal((await stream.next()).done, true);
+  await waitForMicrotasks();
+  assert.deepEqual(leaseEnds, ["late-lease"]);
 });
 
 test("cancelling tool-ineligible local setup prevents raw streaming", async (t) => {
@@ -340,15 +454,20 @@ test("cancelling tool-ineligible local setup prevents raw streaming", async (t) 
   const serverReady = new Promise((resolve) => {
     resolveServer = resolve;
   });
+  const leaseEnds = [];
   const { reasoningService } = await loadReasoningService(
     t,
     "openwhispr-tool-ineligible-model-setup-cancel-test-",
     {
       window: {
         electronAPI: {
-          llamaServerStart: () => {
+          llamaInferenceLeaseBegin: () => {
             serverStarted = true;
             return serverReady;
+          },
+          llamaInferenceLeaseEnd: async (leaseToken) => {
+            leaseEnds.push(leaseToken);
+            return { success: true };
           },
         },
       },
@@ -376,7 +495,7 @@ test("cancelling tool-ineligible local setup prevents raw streaming", async (t) 
   assert.equal(serverStarted, true, "fixture setup: raw model setup must be pending");
 
   reasoningService.cancelActiveStream();
-  resolveServer({ success: true, port: 11434 });
+  resolveServer({ success: true, port: 11434, leaseToken: "late-raw-lease" });
 
   const firstResult = await first;
   const chunks = firstResult.done ? [] : [firstResult.value];
@@ -384,6 +503,8 @@ test("cancelling tool-ineligible local setup prevents raw streaming", async (t) 
 
   assert.deepEqual(chunks, [{ type: "done", finishReason: "stop" }]);
   assert.equal(fetchCalls, 0);
+  await waitForMicrotasks();
+  assert.deepEqual(leaseEnds, ["late-raw-lease"]);
 });
 
 test("cancelling a raw stream after its reader starts ends normally", async (t) => {
@@ -810,7 +931,9 @@ test("a provider error part rejects the agent stream instead of ending it silent
   // closes the stream. The generator must surface that as a rejection.
   globalThis.fetch = async () =>
     new Response(
-      JSON.stringify({ error: { message: "Incorrect API key provided", type: "invalid_request_error" } }),
+      JSON.stringify({
+        error: { message: "Incorrect API key provided", type: "invalid_request_error" },
+      }),
       { status: 401, headers: { "content-type": "application/json" } }
     );
 
@@ -818,7 +941,11 @@ test("a provider error part rejects the agent stream instead of ending it silent
     [{ role: "user", content: "hello" }],
     "qwen3-4b-q4_k_m",
     "lan",
-    { systemPrompt: "Answer the user.", lanUrl: "http://127.0.0.1:11434/v1", disableThinking: true },
+    {
+      systemPrompt: "Answer the user.",
+      lanUrl: "http://127.0.0.1:11434/v1",
+      disableThinking: true,
+    },
     registry.toAISDKFormat()
   );
 
