@@ -12,7 +12,7 @@ test("writing preferences normalize startup values, persist selections, and acce
     },
     window: {
       electronAPI: {
-        getDictionary: async () => [],
+        getDictionary: async () => ["OpenWhispr"],
         setDictionary: async () => ({ success: true }),
       },
       addEventListener(type, listener) {
@@ -80,7 +80,7 @@ test("spoken Enter defaults off and normalizes a receiving-window update", async
     initialStorage: { spokenEnterEnabled: "unexpected" },
     window: {
       electronAPI: {
-        getDictionary: async () => [],
+        getDictionary: async () => ["OpenWhispr"],
         setDictionary: async () => ({ success: true }),
       },
       addEventListener(type, listener) {

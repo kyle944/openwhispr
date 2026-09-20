@@ -114,6 +114,10 @@ function installHookDom(t) {
 }
 
 test("mounted per-app availability reacts to policy and managed-identity transitions", async (t) => {
+  let root;
+  t.after(async () => {
+    if (root) await React.act(async () => root.unmount());
+  });
   installBrowserGlobals(t, {
     initialStorage: {
       enterpriseSetupMode: "auto",
@@ -141,10 +145,6 @@ test("mounted per-app availability reacts to policy and managed-identity transit
     return null;
   }
 
-  let root;
-  t.after(async () => {
-    if (root) await React.act(async () => root.unmount());
-  });
   await React.act(async () => {
     root = createRoot(container);
     root.render(React.createElement(Harness));

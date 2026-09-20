@@ -272,7 +272,11 @@ function parseJson(input: string): Pick<ParsedTranscriptImport, "title" | "text"
   const isArray = Array.isArray(parsed);
   const container =
     !isArray && parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
-  const records = isArray ? parsed : Array.isArray(container?.segments) ? container.segments : null;
+  const records = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray(container?.segments)
+      ? container.segments
+      : null;
   if (!records)
     throw new TranscriptImportError("malformed", "The JSON transcript needs a segments array.");
   if (!records.length)
