@@ -9,9 +9,12 @@ test("writing preferences normalize startup values, persist selections, and acce
       cleanupIntensity: "unexpected",
       cleanupOutputMode: "unexpected",
       cleanupTone: "unexpected",
-      backgroundCleanupEnabled: "unexpected",
     },
     window: {
+      electronAPI: {
+        getDictionary: async () => [],
+        setDictionary: async () => ({ success: true }),
+      },
       addEventListener(type, listener) {
         if (type === "storage") storageListener = listener;
       },
@@ -76,6 +79,10 @@ test("spoken Enter defaults off and normalizes a receiving-window update", async
   const { storage } = installBrowserGlobals(t, {
     initialStorage: { spokenEnterEnabled: "unexpected" },
     window: {
+      electronAPI: {
+        getDictionary: async () => [],
+        setDictionary: async () => ({ success: true }),
+      },
       addEventListener(type, listener) {
         if (type === "storage") storageListener = listener;
       },

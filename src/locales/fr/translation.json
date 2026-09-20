@@ -3110,7 +3110,7 @@
       "urlYoutubeBlocked": "YouTube bloque temporairement les téléchargements depuis votre réseau. Réessayez dans un moment.",
       "customEndpointInvalid": "Le point de terminaison de transcription personnalisé n'est pas configuré ou est invalide. Mettez-le à jour dans les réglages.",
       "importTranscript": "Importer une transcription",
-      "importDescription": "TXT, Markdown, SRT, VTT ou JSON · jusqu'à 10 Mo · reste sur cet appareil",
+      "importDescription": "TXT, Markdown, SRT, VTT ou JSON · jusqu’à 10 Mo · analysé localement et soumis aux réglages de sauvegarde et de partage de cette destination",
       "importChooseFile": "Choisir un fichier de transcription",
       "importing": "Importation...",
       "importComplete": "Transcription importée",

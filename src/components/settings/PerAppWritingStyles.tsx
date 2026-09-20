@@ -1,7 +1,8 @@
 import { Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useShallow } from "zustand/react/shallow";
-import { selectResolvedLLMConfig, useSettingsStore } from "../../stores/settingsStore";
+import { usePerAppWritingStylesSurface } from "../../hooks/usePerAppWritingStylesSurface";
+import { useSettingsStore } from "../../stores/settingsStore";
 import type { CleanupOutputMode, CleanupTone } from "../../utils/writingPreferences";
 import { Button } from "../ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
@@ -12,22 +13,18 @@ const SELECT_CLASS = "h-7 w-36 text-xs rounded-lg px-2.5 [&>svg]:h-3 [&>svg]:w-3
 
 export default function PerAppWritingStyles() {
   const { t } = useTranslation();
-  const {
-    cleanupIntensity,
-    effectiveCleanupMode,
-    perAppWritingStyles,
-    removePerAppWritingStyle,
-    setPerAppWritingStyle,
-  } = useSettingsStore(
-    useShallow((state) => ({
-      cleanupIntensity: state.cleanupIntensity,
-      effectiveCleanupMode: selectResolvedLLMConfig(state, "dictationCleanup").mode,
-      perAppWritingStyles: state.perAppWritingStyles,
-      removePerAppWritingStyle: state.removePerAppWritingStyle,
-      setPerAppWritingStyle: state.setPerAppWritingStyle,
-    }))
-  );
-  const supported = effectiveCleanupMode === "local";
+  const surface = usePerAppWritingStylesSurface();
+  const { cleanupIntensity, perAppWritingStyles, removePerAppWritingStyle, setPerAppWritingStyle } =
+    useSettingsStore(
+      useShallow((state) => ({
+        cleanupIntensity: state.cleanupIntensity,
+        perAppWritingStyles: state.perAppWritingStyles,
+        removePerAppWritingStyle: state.removePerAppWritingStyle,
+        setPerAppWritingStyle: state.setPerAppWritingStyle,
+      }))
+    );
+  if (surface === "hidden") return null;
+  const supported = surface === "available";
 
   return (
     <div className="space-y-3">

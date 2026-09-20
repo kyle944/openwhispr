@@ -22,7 +22,7 @@ async function loadAudioManager(t, { cachePrefix, settingsKey }) {
         getKeyterms: () => [],
         shouldStreamTranscription: () => false,
         isDictionaryEcho: () => false,
-        processTranscription: async (text) => text,
+        processTranscriptionResult: async (text) => ({ text, routeKind: "skip" }),
         isReasoningAvailable: async () => false,
         ...overrides,
       }),
@@ -139,6 +139,7 @@ test("cloud->local fallback under org policy", async (t) => {
     const result = await failingCloudManager().processWithOpenAIAPI(audioBlob, {});
     assert.equal(result.success, true);
     assert.equal(result.text, "local text");
+    assert.equal(result.rawText, "local text");
     assert.equal(result.source, "local-fallback");
     assert.equal(localWhisperCalls, 1);
   });

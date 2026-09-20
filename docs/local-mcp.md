@@ -23,6 +23,8 @@ For a source checkout, use `node /absolute/path/to/openwhispr/scripts/openwhispr
 
 The adapter supports current MCP `2026-07-28` clients with `server/discover` and per-request metadata. It also supports the earlier `initialize` / `notifications/initialized` lifecycle requested by hosts that negotiate `2025-11-25` or `2025-06-18`.
 
+Its wire behavior follows the MCP [2026-07-28 transport specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports), [versioning specification](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning), [server discovery specification](https://modelcontextprotocol.io/specification/2026-07-28/server/discover), and [tools specification](https://modelcontextprotocol.io/specification/2026-07-28/server/tools). The compatibility lifecycle follows the [2025-11-25 initialization and version-negotiation rules](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle) and accepts the legacy [`_meta.progressToken`](https://modelcontextprotocol.io/specification/2025-11-25/basic/utilities/progress).
+
 It exposes exactly two read-only tools:
 
 - `openwhispr_search_notes(query, limit?)`: requires a query and returns at most 10 short note excerpts.

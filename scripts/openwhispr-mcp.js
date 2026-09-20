@@ -21,6 +21,8 @@ const MAX_BRIDGE_RESPONSE_BYTES = 1 * 1024 * 1024;
 const MAX_MESSAGE_BYTES = 64 * 1024;
 const MAX_OUTBOUND_MESSAGE_BYTES = 64 * 1024;
 const MAX_CONCURRENT_BRIDGE_REQUESTS = 4;
+const MAX_QUEUED_BRIDGE_REQUESTS = 16;
+const MAX_REQUEST_ID_BYTES = 4 * 1024;
 const MAX_SEARCH_QUERY_LENGTH = 512;
 const MAX_SEARCH_RESULTS = 10;
 const MAX_NOTE_CONTENT_BYTES = 32 * 1024;
@@ -30,8 +32,33 @@ const MAX_TITLE_BYTES = 512;
 
 class McpUserError extends Error {}
 
-let activeBridgeRequests = 0;
-const queuedBridgeRequests = [];
+function createRequestLimiter(maxConcurrent, maxQueued) {
+  let activeRequests = 0;
+  const queuedRequests = [];
+
+  return function schedule(operation) {
+    return new Promise((resolve, reject) => {
+      const run = () => {
+        activeRequests += 1;
+        Promise.resolve()
+          .then(operation)
+          .then(resolve, reject)
+          .finally(() => {
+            activeRequests -= 1;
+            queuedRequests.shift()?.();
+          });
+      };
+      if (activeRequests < maxConcurrent) run();
+      else if (queuedRequests.length < maxQueued) queuedRequests.push(run);
+      else reject(new McpUserError("OpenWhispr local bridge is busy. Retry shortly."));
+    });
+  };
+}
+
+const scheduleBridgeRequest = createRequestLimiter(
+  MAX_CONCURRENT_BRIDGE_REQUESTS,
+  MAX_QUEUED_BRIDGE_REQUESTS
+);
 
 function getBridgeFilePath(home = os.homedir()) {
   return path.join(home, ".openwhispr", "cli-bridge.json");
@@ -58,6 +85,17 @@ function readBridgeCredentials({
     // Inspect and read the same opened file descriptor. This closes the
     // symlink/time-of-check-time-of-use window around the bearer credential.
     stat = fsModule.fstatSync(descriptor);
+    if (!stat.isFile()) {
+      throw new McpUserError("OpenWhispr local bridge credentials are invalid.");
+    }
+    // Windows uses ACLs rather than POSIX modes. On Unix, refuse a credential
+    // file readable by group or other users before its bearer token is read.
+    if (platform !== "win32" && (stat.mode & 0o777) !== 0o600) {
+      throw new McpUserError("OpenWhispr local bridge credentials must have mode 0600.");
+    }
+    if (platform !== "win32" && getuid && stat.uid !== getuid()) {
+      throw new McpUserError("OpenWhispr local bridge credentials must be owned by this user.");
+    }
     raw = fsModule.readFileSync(descriptor, "utf8");
   } catch (error) {
     if (error instanceof McpUserError) throw error;
@@ -73,18 +111,6 @@ function readBridgeCredentials({
         // The read completed or failed already; no credential is exposed.
       }
     }
-  }
-
-  if (!stat.isFile()) {
-    throw new McpUserError("OpenWhispr local bridge credentials are invalid.");
-  }
-  // Windows uses ACLs rather than POSIX modes. On Unix, refuse a credential
-  // file readable by group or other users rather than exposing its bearer token.
-  if (platform !== "win32" && (stat.mode & 0o077) !== 0) {
-    throw new McpUserError("OpenWhispr local bridge credentials must have mode 0600.");
-  }
-  if (platform !== "win32" && getuid && stat.uid !== getuid()) {
-    throw new McpUserError("OpenWhispr local bridge credentials must be owned by this user.");
   }
 
   let credentials;
@@ -108,39 +134,48 @@ function readBridgeCredentials({
   return credentials;
 }
 
-function scheduleBridgeRequest(operation) {
-  return new Promise((resolve, reject) => {
-    const run = () => {
-      activeBridgeRequests += 1;
-      Promise.resolve()
-        .then(operation)
-        .then(resolve, reject)
-        .finally(() => {
-          activeBridgeRequests -= 1;
-          queuedBridgeRequests.shift()?.();
-        });
-    };
-    if (activeBridgeRequests < MAX_CONCURRENT_BRIDGE_REQUESTS) run();
-    else queuedBridgeRequests.push(run);
-  });
+function bridgeGet(
+  pathname,
+  {
+    readCredentials = readBridgeCredentials,
+    requestFactory = http.request,
+    timeoutMs = BRIDGE_TIMEOUT_MS,
+  } = {}
+) {
+  return scheduleBridgeRequest(() =>
+    bridgeGetOnce(pathname, { readCredentials, requestFactory, timeoutMs })
+  );
 }
 
-function bridgeGet(pathname, { readCredentials = readBridgeCredentials } = {}) {
-  return scheduleBridgeRequest(() => bridgeGetOnce(pathname, { readCredentials }));
-}
-
-function bridgeGetOnce(pathname, { readCredentials }) {
+function bridgeGetOnce(
+  pathname,
+  { readCredentials, requestFactory = http.request, timeoutMs = BRIDGE_TIMEOUT_MS }
+) {
   const credentials = readCredentials();
 
   return new Promise((resolve, reject) => {
-    const request = http.request(
+    let settled = false;
+    let deadline;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      callback(value);
+    };
+    const rejectBridgeError = (error) => finish(reject, normalizeBridgeError(error));
+    const timeoutError = () => {
+      const error = new Error("OpenWhispr local bridge request timed out.");
+      error.code = "ETIMEDOUT";
+      return error;
+    };
+    const request = requestFactory(
       {
         hostname: BRIDGE_HOST,
         port: credentials.port,
         path: pathname,
         method: "GET",
         agent: false,
-        timeout: BRIDGE_TIMEOUT_MS,
+        timeout: timeoutMs,
         headers: {
           Accept: "application/json",
           Authorization: `Bearer ${credentials.token}`,
@@ -157,10 +192,11 @@ function bridgeGetOnce(pathname, { readCredentials }) {
           }
           chunks.push(chunk);
         });
-        response.on("error", (error) => reject(normalizeBridgeError(error)));
+        response.on("error", rejectBridgeError);
         response.on("end", () => {
           if (response.statusCode === 401 || response.statusCode === 403) {
-            reject(
+            finish(
+              reject,
               new McpUserError(
                 "OpenWhispr local bridge authorization expired. Restart the desktop app and retry."
               )
@@ -168,11 +204,12 @@ function bridgeGetOnce(pathname, { readCredentials }) {
             return;
           }
           if (response.statusCode === 404) {
-            reject(new McpUserError("The requested OpenWhispr record was not found."));
+            finish(reject, new McpUserError("The requested OpenWhispr record was not found."));
             return;
           }
           if (!response.statusCode || response.statusCode >= 400) {
-            reject(
+            finish(
+              reject,
               new McpUserError(
                 "OpenWhispr local bridge request failed. Restart the desktop app and retry."
               )
@@ -180,19 +217,21 @@ function bridgeGetOnce(pathname, { readCredentials }) {
             return;
           }
           try {
-            resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+            finish(resolve, JSON.parse(Buffer.concat(chunks).toString("utf8")));
           } catch {
-            reject(new McpUserError("OpenWhispr local bridge returned an invalid response."));
+            finish(
+              reject,
+              new McpUserError("OpenWhispr local bridge returned an invalid response.")
+            );
           }
         });
       }
     );
     request.on("timeout", () => {
-      const error = new Error("OpenWhispr local bridge request timed out.");
-      error.code = "ETIMEDOUT";
-      request.destroy(error);
+      request.destroy(timeoutError());
     });
-    request.on("error", (error) => reject(normalizeBridgeError(error)));
+    request.on("error", rejectBridgeError);
+    deadline = setTimeout(() => request.destroy(timeoutError()), timeoutMs);
     request.end();
   });
 }
@@ -404,15 +443,26 @@ function toolErrorResult(message, era) {
   return withResultType({ content: [{ type: "text", text: message }], isError: true }, era);
 }
 
-function serializedResponseBytes(result) {
-  return Buffer.byteLength(JSON.stringify({ jsonrpc: "2.0", id: 0, result }), "utf8");
+function serializedResponseBytes(id, result) {
+  return Buffer.byteLength(JSON.stringify({ jsonrpc: "2.0", id, result }), "utf8");
 }
 
-function truncateResultToFit(result, era) {
+function addStructuredTextContent(result) {
+  result.content = [
+    {
+      type: "text",
+      text: JSON.stringify(result.structuredContent),
+    },
+  ];
+}
+
+function truncateResultToFit(result, era, id) {
   const payload = result?.structuredContent;
   if (!payload || typeof payload !== "object") return result;
 
-  while (serializedResponseBytes(result) > MAX_OUTBOUND_MESSAGE_BYTES) {
+  while (true) {
+    addStructuredTextContent(result);
+    if (serializedResponseBytes(id, result) <= MAX_OUTBOUND_MESSAGE_BYTES) return result;
     const candidates = [];
     const visit = (value, parent = null, key = null) => {
       if (typeof value === "string") {
@@ -436,7 +486,6 @@ function truncateResultToFit(result, era) {
     if (candidate.key === "content") candidate.parent.contentTruncated = true;
     if (candidate.key === "transcript") candidate.parent.transcriptTruncated = true;
   }
-  return result;
 }
 
 class McpProtocol {
@@ -460,6 +509,12 @@ class McpProtocol {
     const isNotification = !Object.prototype.hasOwnProperty.call(message, "id");
     if (!isNotification && !isRequestId(message.id)) {
       return rpcError(null, -32600, "Invalid Request");
+    }
+    if (
+      !isNotification &&
+      Buffer.byteLength(JSON.stringify(message.id), "utf8") > MAX_REQUEST_ID_BYTES
+    ) {
+      return rpcError(null, -32600, `MCP request id exceeds ${MAX_REQUEST_ID_BYTES} bytes.`);
     }
 
     if (message.method === "initialize") return this._initialize(message, isNotification);
@@ -578,18 +633,13 @@ class McpProtocol {
       return truncateResultToFit(
         withResultType(
           {
-            content: [
-              {
-                type: "text",
-                text: "OpenWhispr returned a bounded local result in structuredContent.",
-              },
-            ],
             structuredContent,
             isError: false,
           },
           this.era
         ),
-        this.era
+        this.era,
+        message.id
       );
     } catch (error) {
       return toolErrorResult(
@@ -662,14 +712,21 @@ function startStdioServer({
   protocol = new McpProtocol(),
 } = {}) {
   let buffer = "";
+  let bufferBytes = 0;
   let stopped = false;
 
   const send = (response) => {
     if (!response) return;
     let encoded = JSON.stringify(response);
     if (Buffer.byteLength(encoded, "utf8") > MAX_OUTBOUND_MESSAGE_BYTES) {
+      const responseId =
+        isRequestId(response.id) &&
+        Buffer.byteLength(JSON.stringify(response.id), "utf8") <= MAX_REQUEST_ID_BYTES
+          ? response.id
+          : null;
+      // Keep bounded request IDs so clients can correlate this failure.
       encoded = JSON.stringify(
-        rpcError(response.id, -32603, "MCP response exceeds the output size limit.")
+        rpcError(responseId, -32603, "MCP response exceeds the output size limit.")
       );
     }
     output.write(`${encoded}\n`);
@@ -685,19 +742,26 @@ function startStdioServer({
   input.setEncoding("utf8");
   input.on("data", (chunk) => {
     if (stopped) return;
-    buffer += chunk;
-    while (true) {
-      const newline = buffer.indexOf("\n");
-      if (newline === -1) {
-        if (Buffer.byteLength(buffer, "utf8") > MAX_MESSAGE_BYTES) rejectOversizedFrame();
-        return;
-      }
-      const line = buffer.slice(0, newline);
-      buffer = buffer.slice(newline + 1);
-      if (Buffer.byteLength(line, "utf8") > MAX_MESSAGE_BYTES) {
+    let offset = 0;
+    while (offset < chunk.length) {
+      const newline = chunk.indexOf("\n", offset);
+      const end = newline === -1 ? chunk.length : newline;
+      const segment = chunk.slice(offset, end);
+      const segmentBytes = Buffer.byteLength(segment, "utf8");
+      if (segmentBytes > MAX_MESSAGE_BYTES - bufferBytes) {
         rejectOversizedFrame();
         return;
       }
+      // Retain only one bounded frame. A stream chunk may hold many valid
+      // frames, so it is deliberately split before anything is accumulated.
+      buffer += segment;
+      bufferBytes += segmentBytes;
+      if (newline === -1) return;
+
+      const line = buffer;
+      buffer = "";
+      bufferBytes = 0;
+      offset = newline + 1;
       if (!line.trim()) continue;
       let message;
       try {
@@ -720,10 +784,13 @@ module.exports = {
   BRIDGE_PORT_MIN,
   MAX_MESSAGE_BYTES,
   MAX_OUTBOUND_MESSAGE_BYTES,
+  MAX_REQUEST_ID_BYTES,
   MAX_CONCURRENT_BRIDGE_REQUESTS,
   McpProtocol,
   McpUserError,
   bridgeGet,
+  bridgeGetOnce,
+  createRequestLimiter,
   getBridgeFilePath,
   readBridgeCredentials,
   startStdioServer,

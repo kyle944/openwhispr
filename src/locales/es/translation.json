@@ -2947,7 +2947,7 @@
       "urlYoutubeBlocked": "YouTube está bloqueando temporalmente las descargas desde tu red. Inténtalo de nuevo más tarde.",
       "customEndpointInvalid": "El endpoint de transcripción personalizado no está configurado o no es válido. Actualízalo en Ajustes.",
       "importTranscript": "Importar transcripción",
-      "importDescription": "TXT, Markdown, SRT, VTT o JSON · hasta 10 MB · permanece en este dispositivo",
+      "importDescription": "TXT, Markdown, SRT, VTT o JSON · hasta 10 MB · se analiza localmente y sigue la configuración de copia y uso compartido de este destino",
       "importChooseFile": "Elegir archivo de transcripción",
       "importing": "Importando...",
       "importComplete": "Transcripción importada",

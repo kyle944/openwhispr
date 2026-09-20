@@ -69,6 +69,17 @@ function normalizeSegmentTimestamps(segments, note) {
   });
 }
 
+function hasExactCueTiming(seg) {
+  return (
+    seg.importedCue === true &&
+    typeof seg.cueStart === "number" &&
+    Number.isFinite(seg.cueStart) &&
+    typeof seg.cueEnd === "number" &&
+    Number.isFinite(seg.cueEnd) &&
+    seg.cueEnd >= seg.cueStart
+  );
+}
+
 function mergeSegments(segments) {
   const merged = [];
   let lastTimestamp = null;
@@ -76,11 +87,24 @@ function mergeSegments(segments) {
     if (!seg.text?.trim()) continue;
     const ts = seg.timestamp || 0;
     const last = merged[merged.length - 1];
-    if (last && speakerKey(last) === speakerKey(seg) && ts - lastTimestamp < 2) {
+    // Imported subtitle cues retain their individual source bounds, including
+    // gaps and a non-zero first cue, so they must never be coalesced.
+    if (
+      last &&
+      !hasExactCueTiming(last) &&
+      !hasExactCueTiming(seg) &&
+      speakerKey(last) === speakerKey(seg) &&
+      ts - lastTimestamp < 2
+    ) {
       last.text = last.text + " " + seg.text.trim();
-      last.endTimestamp = ts;
+      last.endTimestamp = seg.endTimestamp ?? ts;
     } else {
-      merged.push({ ...seg, timestamp: ts, endTimestamp: ts, text: seg.text.trim() });
+      merged.push({
+        ...seg,
+        timestamp: ts,
+        endTimestamp: seg.endTimestamp ?? ts,
+        text: seg.text.trim(),
+      });
     }
     lastTimestamp = ts;
   }
@@ -140,19 +164,26 @@ function formatTxt(note, segments, speakerMappings) {
 
 function formatSrt(segments, speakerMappings, note = {}) {
   const merged = mergeSegments(normalizeSegmentTimestamps(segments, note));
-  // Upload transcripts carry no speaker identity at all; prefixing every cue
-  // with "Unknown Speaker:" would defeat the subtitle use case. Meeting
-  // segments always serialize a source, so they keep their labels.
+  // Keep historical meeting exports labelled together, but in exact cue mode
+  // prefix only cues that supplied a real speaker identity.
   const hasSpeakerIdentity = merged.some((seg) => seg.speaker || seg.speakerName || seg.source);
+  const exactCueMode = merged.some(hasExactCueTiming);
   const entries = [];
   for (let i = 0; i < merged.length; i++) {
     const seg = merged[i];
-    const nextTs = i + 1 < merged.length ? merged[i + 1].timestamp : seg.endTimestamp + 3;
+    const exactCue = hasExactCueTiming(seg);
+    const start = exactCue ? seg.cueStart : seg.timestamp;
+    const end = exactCue
+      ? seg.cueEnd
+      : i + 1 < merged.length
+        ? merged[i + 1].timestamp
+        : seg.endTimestamp + 3;
+    const prefixSpeaker = exactCueMode
+      ? Boolean(seg.speaker || seg.speakerName || seg.source)
+      : hasSpeakerIdentity;
     entries.push(`${i + 1}`);
-    entries.push(`${formatSrtTimestamp(seg.timestamp)} --> ${formatSrtTimestamp(nextTs)}`);
-    entries.push(
-      hasSpeakerIdentity ? `${resolveSpeaker(seg, speakerMappings)}: ${seg.text}` : seg.text
-    );
+    entries.push(`${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(end)}`);
+    entries.push(prefixSpeaker ? `${resolveSpeaker(seg, speakerMappings)}: ${seg.text}` : seg.text);
     entries.push("");
   }
   return entries.join("\n");

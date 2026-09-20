@@ -35,7 +35,10 @@ async function loadAudioManager(t) {
         export const isCloudCleanupMode = () => false;
         export const isCloudDictationAgentMode = () => false;
         export const isCloudTranslationMode = () => false;
-        export const selectResolvedLLMConfig = () => ({ model: "cleanup-model" });
+        export const selectResolvedLLMConfig = () => ({
+          mode: "local",
+          model: "cleanup-model",
+        });
       `,
       "/dictationAgentInference": `
         export const resolveDictationAgentInference = () => ({
@@ -60,6 +63,7 @@ async function loadAudioManager(t) {
       `,
       "/config/prompts": `
         export const resolvePrompt = () => "agent prompt";
+        export const getCleanupSystemPrompt = () => "cleanup prompt";
         export const appendScreenContextSuffix = (prompt) => prompt;
       `,
       "/services/ReasoningService": "export default class ReasoningService {};",

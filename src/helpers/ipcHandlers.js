@@ -1768,6 +1768,16 @@ class IPCHandlers {
       }
     );
 
+    ipcMain.handle("db-save-transcript-import-note", async (event, payload) => {
+      const result = this.databaseManager.saveTranscriptImportNote(payload);
+      if (result?.success && result?.note && !result.duplicate) {
+        setImmediate(() => broadcastToWindows("note-added", result.note));
+        this._asyncVectorUpsert(result.note);
+        this._asyncMirrorWrite(result.note);
+      }
+      return result;
+    });
+
     ipcMain.handle("db-get-note", async (event, id) => {
       return this.databaseManager.getNote(id);
     });
@@ -8374,6 +8384,7 @@ class IPCHandlers {
       try {
         this.databaseManager.updateTranscriptionText(id, text, rawText);
         const updated = this.databaseManager.getTranscriptionById(id);
+        if (updated) broadcastToWindows("transcription-updated", updated);
         return { success: true, transcription: updated };
       } catch (error) {
         debugLogger.error(

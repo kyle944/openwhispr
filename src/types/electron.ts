@@ -154,6 +154,15 @@ export interface TranscriptionHistoryPage {
   totalWords: number;
 }
 
+export interface TranscriptImportSaveInput {
+  title: string;
+  content: string;
+  sourceFile: string;
+  transcript: string;
+  folderId?: number | null;
+  spaceId?: number | null;
+}
+
 export interface NoteItem {
   id: number;
   title: string;
@@ -1157,6 +1166,9 @@ declare global {
         folderId?: number | null,
         spaceId?: number | null
       ) => Promise<{ success: boolean; note?: NoteItem }>;
+      saveTranscriptImportNote: (
+        input: TranscriptImportSaveInput
+      ) => Promise<{ success: boolean; note?: NoteItem; duplicate?: boolean }>;
       getNote: (id: number) => Promise<NoteItem | null>;
       getNotes: (
         noteType?: string | null,

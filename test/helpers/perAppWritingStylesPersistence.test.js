@@ -4,8 +4,10 @@ const { createRendererServer, installBrowserGlobals } = require("../lib/renderer
 
 test("per-app styles persist locally and normalize cross-window updates", async (t) => {
   let storageListener;
+  let dictionary = ["OpenWhispr"];
   const { storage } = installBrowserGlobals(t, {
     initialStorage: {
+      customDictionary: JSON.stringify(dictionary),
       perAppWritingStyles: JSON.stringify([
         {
           bundleId: "com.apple.TextEdit",
@@ -16,6 +18,13 @@ test("per-app styles persist locally and normalize cross-window updates", async 
       ]),
     },
     window: {
+      electronAPI: {
+        getDictionary: async () => dictionary,
+        setDictionary: async (words) => {
+          dictionary = [...words];
+          return { success: true };
+        },
+      },
       addEventListener(type, listener) {
         if (type === "storage") storageListener = listener;
       },

@@ -8,6 +8,10 @@ export interface ImportedTranscriptSegment {
   timestamp: number;
   /** A label explicitly present in the source file. */
   speakerName?: string;
+  /** Exact subtitle cue bounds, retained for lossless SRT export. */
+  cueStart?: number;
+  cueEnd?: number;
+  importedCue?: true;
 }
 
 export interface ParsedTranscriptImport {
@@ -28,6 +32,8 @@ export class TranscriptImportError extends Error {
 }
 
 export const TRANSCRIPT_IMPORT_SOURCE_PREFIX = "transcript-import:v1:";
+
+type JsonTimestampUnit = "seconds" | "epoch_seconds" | "epoch_milliseconds";
 
 function normalizedText(value: string): string {
   return value.replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
@@ -66,16 +72,6 @@ function parseClock(value: string): number | null {
   return hours * 3600 + minutes * 60 + seconds + milliseconds / 1000;
 }
 
-function splitSpeakerLabel(text: string): Pick<ImportedTranscriptSegment, "text" | "speakerName"> {
-  const [firstLine, ...followingLines] = text.split("\n");
-  const match = firstLine.match(/^([^:\n]{1,80}):\s+(.+)$/);
-  if (!match) return { text: text.trim() };
-  return {
-    text: [match[2], ...followingLines].join("\n").trim(),
-    speakerName: match[1].trim(),
-  };
-}
-
 function requireAscendingTimestamps(
   segments: ImportedTranscriptSegment[]
 ): ImportedTranscriptSegment[] {
@@ -90,6 +86,18 @@ function requireAscendingTimestamps(
   return segments;
 }
 
+function vttVoice(text: string): Pick<ImportedTranscriptSegment, "text" | "speakerName"> {
+  // WebVTT's <v Name> tag is the only inline speaker syntax we recognize.
+  // Text such as "Note:" is content, not a guessed identity.
+  const match = text.match(/^<v(?:\.[^\s>]+)*\s+([^>\n]+)>([\s\S]*?)(?:<\/v>)?$/i);
+  if (!match || !match[1].trim() || !match[2].trim()) return { text: text.trim() };
+  return { text: match[2].trim(), speakerName: match[1].trim() };
+}
+
+function isVttHeaderMetadata(lines: string[]): boolean {
+  return lines.length > 0 && lines.every((line) => /^[A-Za-z-]+:\s+\S/.test(line));
+}
+
 function parseTimedCues(input: string, format: "srt" | "vtt"): ImportedTranscriptSegment[] {
   let body = requireText(input);
   if (format === "vtt") {
@@ -100,10 +108,17 @@ function parseTimedCues(input: string, format: "srt" | "vtt"): ImportedTranscrip
   }
 
   const segments: ImportedTranscriptSegment[] = [];
+  let sawCue = false;
   for (const rawBlock of body.split(/\n{2,}/)) {
     const lines = rawBlock.split("\n").map((line) => line.trimEnd());
-    if (format === "vtt" && /^NOTE(?:\s|$)/i.test(lines[0] ?? "")) continue;
-    if (/^\d+$/.test(lines[0] ?? "")) lines.shift();
+    const first = lines[0]?.trim() ?? "";
+    if (
+      format === "vtt" &&
+      (/^(?:NOTE|STYLE|REGION)(?:\s|$)/i.test(first) || (!sawCue && isVttHeaderMetadata(lines)))
+    ) {
+      continue;
+    }
+    if (/^\d+$/.test(first)) lines.shift();
     let timing = lines.shift()?.trim();
     // VTT permits a non-numeric cue identifier before its timing line.
     if (format === "vtt" && timing && !timing.includes("-->")) timing = lines.shift()?.trim();
@@ -117,38 +132,134 @@ function parseTimedCues(input: string, format: "srt" | "vtt"): ImportedTranscrip
     const timestamp = parseClock(timingMatch[1]);
     const end = parseClock(timingMatch[2]);
     const cueText = lines.join("\n").trim();
-    if (timestamp == null || end == null || end < timestamp || !cueText) {
+    if (timestamp == null || end == null || end <= timestamp || !cueText) {
       throw new TranscriptImportError("malformed", "A transcript cue has invalid timing or text.");
     }
-    segments.push({ timestamp, ...splitSpeakerLabel(cueText) });
+    segments.push({
+      timestamp,
+      cueStart: timestamp,
+      cueEnd: end,
+      importedCue: true,
+      ...(format === "vtt" ? vttVoice(cueText) : { text: cueText }),
+    });
+    sawCue = true;
   }
   if (!segments.length) throw new TranscriptImportError("empty", "The transcript has no cues.");
   return requireAscendingTimestamps(segments);
 }
 
+const MARKDOWN_EXPORT_SEGMENT_HEADER = /^\*\*([^*\n]+)\*\*\s+`(\d{2,}:\d{2}:\d{2})`\s*$/;
+
 function parseMarkdown(input: string): Pick<ParsedTranscriptImport, "title" | "text" | "segments"> {
   const text = requireText(input);
-  const title = text.match(/^#\s+(.+)$/m)?.[1]?.trim() || undefined;
-  const headerPattern = /^\*\*([^*\n]+)\*\*\s+`([^`]+)`\s*$/gm;
-  const headers = [...text.matchAll(headerPattern)];
-  if (!headers.length) return { title, text, segments: [{ text, timestamp: 0 }] };
+  const generic = {
+    title: text.match(/^#\s+(.+)$/m)?.[1]?.trim() || undefined,
+    text,
+    segments: [{ text, timestamp: 0 }],
+  };
+  const lines = text.split("\n");
+  if (
+    lines.length < 7 ||
+    !/^#\s+\S/.test(lines[0]) ||
+    lines[1] !== "" ||
+    !/^\*\*Date:\*\*\s+\S/.test(lines[2])
+  ) {
+    return generic;
+  }
+
+  let index = 3;
+  if (/^\*\*[^*\n]+:\*\*\s+\S/.test(lines[index] ?? "")) index++;
+  if (lines[index] !== "" || lines[index + 1] !== "---" || lines[index + 2] !== "") return generic;
+  index += 3;
 
   const segments: ImportedTranscriptSegment[] = [];
-  headers.forEach((header, index) => {
+  while (index < lines.length) {
+    const header = lines[index]?.match(MARKDOWN_EXPORT_SEGMENT_HEADER);
+    if (!header) return generic;
     const timestamp = parseClock(header[2]);
-    const start = (header.index ?? 0) + header[0].length;
-    const end = index + 1 < headers.length ? headers[index + 1].index : text.length;
-    const segmentText = text.slice(start, end).replace(/^\s+|\s+$/g, "");
-    if (timestamp == null || !segmentText || segmentText === "---") {
-      throw new TranscriptImportError("malformed", "A Markdown transcript segment is incomplete.");
+    if (timestamp == null) return generic;
+    index++;
+    const body: string[] = [];
+    while (index < lines.length && !MARKDOWN_EXPORT_SEGMENT_HEADER.test(lines[index])) {
+      body.push(lines[index]);
+      index++;
     }
+    while (body.length && body[body.length - 1] === "") body.pop();
+    const segmentText = body.join("\n").trim();
+    if (!segmentText) return generic;
     segments.push({ text: segmentText, timestamp, speakerName: header[1].trim() });
-  });
+  }
+  if (!segments.length) return generic;
   return {
-    title,
+    title: lines[0].replace(/^#\s+/, "").trim(),
     text: segments.map((segment) => segment.text).join("\n\n"),
     segments: requireAscendingTimestamps(segments),
   };
+}
+
+function declaredJsonTimestampUnit(
+  container: Record<string, unknown> | null,
+  isArray: boolean,
+  timestamps: number[]
+): JsonTimestampUnit {
+  if (isArray) {
+    // A top-level array is portable relative-seconds JSON when every value is
+    // small, or OpenWhispr's stored epoch-millisecond shape when every value
+    // is at millisecond epoch scale. The intervening epoch-second band is
+    // ambiguous without an object-level timestamp_unit declaration.
+    if (timestamps.every((timestamp) => timestamp < 1e9)) return "seconds";
+    if (timestamps.every((timestamp) => timestamp >= 1e12)) return "epoch_milliseconds";
+    throw new TranscriptImportError(
+      "malformed",
+      "A JSON segment array has mixed or ambiguous timestamp units."
+    );
+  }
+  const metadata = container?.metadata;
+  const rawUnits = [
+    metadata && typeof metadata === "object"
+      ? (metadata as Record<string, unknown>).timestamp_unit
+      : undefined,
+    container?.timestamp_unit,
+  ].filter((value) => value != null);
+  if (!rawUnits.length) {
+    if (timestamps.some((timestamp) => timestamp >= 1e9)) {
+      throw new TranscriptImportError(
+        "malformed",
+        "JSON timestamps at epoch scale must declare timestamp_unit."
+      );
+    }
+    return "seconds";
+  }
+  const units = rawUnits.map((rawUnit): JsonTimestampUnit => {
+    switch (rawUnit) {
+      case "seconds":
+      case "relative_seconds":
+        return "seconds";
+      case "epoch_seconds":
+      case "epoch_milliseconds":
+        return rawUnit;
+      default:
+        throw new TranscriptImportError(
+          "malformed",
+          "timestamp_unit must be seconds, epoch_seconds, or epoch_milliseconds."
+        );
+    }
+  });
+  const unit = units[0];
+  if (units.some((declared) => declared !== unit)) {
+    throw new TranscriptImportError("malformed", "JSON timestamp unit declarations conflict.");
+  }
+  const invalidScale = timestamps.some((timestamp) =>
+    unit === "seconds"
+      ? timestamp >= 1e9
+      : unit === "epoch_seconds"
+        ? timestamp < 1e9 || timestamp >= 1e12
+        : timestamp < 1e12
+  );
+  if (invalidScale) {
+    throw new TranscriptImportError("malformed", "JSON timestamps use mixed or invalid units.");
+  }
+  return unit;
 }
 
 function parseJson(input: string): Pick<ParsedTranscriptImport, "title" | "text" | "segments"> {
@@ -158,22 +269,14 @@ function parseJson(input: string): Pick<ParsedTranscriptImport, "title" | "text"
   } catch {
     throw new TranscriptImportError("malformed", "The JSON transcript could not be read.");
   }
-  const container = Array.isArray(parsed)
-    ? null
-    : parsed && typeof parsed === "object"
-      ? parsed
-      : null;
-  const records = Array.isArray(parsed)
-    ? parsed
-    : Array.isArray((container as { segments?: unknown[] } | null)?.segments)
-      ? (container as { segments: unknown[] }).segments
-      : null;
-  if (!records) {
+  const isArray = Array.isArray(parsed);
+  const container =
+    !isArray && parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  const records = isArray ? parsed : Array.isArray(container?.segments) ? container.segments : null;
+  if (!records)
     throw new TranscriptImportError("malformed", "The JSON transcript needs a segments array.");
-  }
-  if (!records.length) {
+  if (!records.length)
     throw new TranscriptImportError("empty", "The JSON transcript has no segments.");
-  }
 
   const rawSegments = records.map((record) => {
     if (!record || typeof record !== "object") {
@@ -201,20 +304,24 @@ function parseJson(input: string): Pick<ParsedTranscriptImport, "title" | "text"
         : {}),
     };
   });
-
-  // OpenWhispr's existing note transcript is epoch-millisecond based, while
-  // its exported JSON uses relative seconds. Accept both exact structures and
-  // normalize the stored form to relative seconds before re-anchoring on save.
-  const looksEpochBased = rawSegments.every((segment) => segment.timestamp > 1e9);
-  const epochStart = looksEpochBased
-    ? Math.min(...rawSegments.map((segment) => segment.timestamp))
-    : 0;
+  const unit = declaredJsonTimestampUnit(
+    container,
+    isArray,
+    rawSegments.map((segment) => segment.timestamp)
+  );
+  const epochStart =
+    unit === "seconds" ? 0 : Math.min(...rawSegments.map((segment) => segment.timestamp));
+  const divisor = unit === "epoch_milliseconds" ? 1000 : 1;
   const segments = rawSegments.map((segment) => ({
     ...segment,
-    timestamp: looksEpochBased ? (segment.timestamp - epochStart) / 1000 : segment.timestamp,
+    timestamp: (segment.timestamp - epochStart) / divisor,
   }));
-  const metadata = container as { metadata?: { title?: unknown }; title?: unknown } | null;
-  const titleSource = metadata?.metadata?.title ?? metadata?.title;
+  const metadata = container?.metadata;
+  const metadataTitle =
+    metadata && typeof metadata === "object"
+      ? (metadata as Record<string, unknown>).title
+      : undefined;
+  const titleSource = metadataTitle ?? container?.title;
   const title =
     typeof titleSource === "string" && titleSource.trim() ? titleSource.trim() : undefined;
   return {
@@ -225,11 +332,10 @@ function parseJson(input: string): Pick<ParsedTranscriptImport, "title" | "text"
 }
 
 /**
- * Pure, local parser for portable transcript files. TXT is treated as one
- * unlabelled segment; Markdown accepts the app's transcript-export headings;
- * JSON accepts only an array of { text, timestamp, speakerName? } records or
- * the app's { metadata?, segments } export shape. No speaker labels are made
- * up when a source does not supply one.
+ * Pure, local parser for portable transcript files. SRT never infers speakers
+ * from punctuation; VTT accepts only explicit <v Name> tags. JSON accepts the
+ * documented exported object shape (relative seconds by default, or a declared
+ * timestamp_unit) and the existing stored epoch-millisecond segment array.
  */
 export function parseTranscriptImport(fileName: string, source: string): ParsedTranscriptImport {
   const format = supportedFormat(fileName);
@@ -242,14 +348,8 @@ export function parseTranscriptImport(fileName: string, source: string): ParsedT
     const segments = parseTimedCues(text, format);
     return { format, text: segments.map((segment) => segment.text).join("\n\n"), segments };
   }
-  if (format === "md") {
-    const parsed = parseMarkdown(text);
-    return { format, ...parsed };
-  }
-  if (format === "json") {
-    const parsed = parseJson(text);
-    return { format, ...parsed };
-  }
+  if (format === "md") return { format, ...parseMarkdown(text) };
+  if (format === "json") return { format, ...parseJson(text) };
   const plainText = requireText(text);
   return { format, text: plainText, segments: [{ text: plainText, timestamp: 0 }] };
 }
@@ -264,6 +364,9 @@ export function serializeImportedTranscript(
       text: segment.text,
       timestamp: anchorMs + Math.round(segment.timestamp * 1000),
       ...(segment.speakerName ? { speakerName: segment.speakerName } : {}),
+      ...(segment.importedCue
+        ? { cueStart: segment.cueStart, cueEnd: segment.cueEnd, importedCue: true }
+        : {}),
     }))
   );
 }

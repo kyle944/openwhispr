@@ -130,7 +130,7 @@ function parseBatchUrls(text: string): { valid: string[]; skipped: number } {
 }
 
 interface UploadAudioViewProps {
-  onNoteCreated?: (noteId: number, folderId: number | null) => void;
+  onNoteCreated?: (noteId: number, folderId: number | null, spaceId?: number) => void;
   onOpenSettings?: (section: string) => void;
 }
 
@@ -1830,7 +1830,7 @@ interface CompleteViewProps {
   selectedFolderId: string;
   handleFolderChange: (val: string) => void;
   noteId: number | null;
-  onNoteCreated?: (noteId: number, folderId: number | null) => void;
+  onNoteCreated?: (noteId: number, folderId: number | null, spaceId?: number) => void;
   reset: () => void;
 }
 

@@ -175,12 +175,14 @@ test("duplicate or rejected corrections do not re-warm an unchanged prompt", asy
   assert.equal(prewarms.length, 2, "only a real prompt change spends a warmup");
 });
 
-test("disabled background cleanup or no-cleanup mode does not consume a prompt prewarm", async (t) => {
+test("disabled background cleanup does not consume a prompt prewarm", async (t) => {
   const disabledBackground = await mountProvider(t, "openwhispr-prewarm-disabled-background-", {
     backgroundCleanupEnabled: false,
   });
   assert.equal(disabledBackground.prewarms.length, 0);
+});
 
+test("no-cleanup mode does not consume a prompt prewarm", async (t) => {
   const noCleanup = await mountProvider(t, "openwhispr-prewarm-disabled-cleanup-", {
     cleanupIntensity: "none",
   });

@@ -1,8 +1,20 @@
 WEBVTT
+Kind: captions
+Language: en
+
+STYLE
+::cue { color: lime; }
+
+REGION
+id: fred
+width: 40%
+
+NOTE editor comment
+This block is not a cue.
 
 welcome
 00:00:01.250 --> 00:00:03.000 align:start
-Jordan: The demo is ready.
+<v.first.loud Jordan>The demo is ready.
 
 00:00:03.000 --> 00:00:05.500
-Yes, let's start.
+Note: Yes, let's start.

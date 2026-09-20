@@ -162,6 +162,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
       folderId,
       spaceId
     ),
+  saveTranscriptImportNote: (input) => ipcRenderer.invoke("db-save-transcript-import-note", input),
   getNote: (id) => ipcRenderer.invoke("db-get-note", id),
   getNotes: (noteType, limit, folderId, spaceId) =>
     ipcRenderer.invoke("db-get-notes", noteType, limit, folderId, spaceId),

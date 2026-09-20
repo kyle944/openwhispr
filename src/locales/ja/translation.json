@@ -2883,7 +2883,7 @@
       "urlYoutubeBlocked": "YouTubeがお使いのネットワークからのダウンロードを一時的にブロックしています。しばらくしてからもう一度お試しください。",
       "customEndpointInvalid": "カスタム文字起こしエンドポイントが未設定か無効です。設定から更新してください。",
       "importTranscript": "文字起こしをインポート",
-      "importDescription": "TXT、Markdown、SRT、VTT、JSON · 最大10 MB · このデバイスに保存されます",
+      "importDescription": "TXT、Markdown、SRT、VTT、JSON · 最大10 MB · ローカルで解析され、この保存先のバックアップと共有設定に従います",
       "importChooseFile": "文字起こしファイルを選択",
       "importing": "インポート中...",
       "importComplete": "文字起こしをインポートしました",

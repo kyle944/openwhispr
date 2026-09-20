@@ -2899,7 +2899,7 @@
       "urlYoutubeBlocked": "YouTube 暫時封鎖了來自您網路的下載。請稍後再試。",
       "customEndpointInvalid": "自訂轉錄端點未設定或無效。請在設定中更新。",
       "importTranscript": "匯入轉錄",
-      "importDescription": "TXT、Markdown、SRT、VTT 或 JSON · 最大 10 MB · 保留在此裝置上",
+      "importDescription": "TXT、Markdown、SRT、VTT 或 JSON · 最大 10 MB · 在本機解析，並遵循此位置的備份與共享設定",
       "importChooseFile": "選擇轉錄檔案",
       "importing": "正在匯入...",
       "importComplete": "轉錄已匯入",

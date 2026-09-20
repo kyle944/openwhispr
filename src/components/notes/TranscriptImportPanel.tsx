@@ -5,7 +5,6 @@ import { Button } from "../ui/button";
 import {
   MAX_TRANSCRIPT_IMPORT_BYTES,
   TranscriptImportError,
-  findImportedTranscriptNote,
   parseTranscriptImport,
   serializeImportedTranscript,
   transcriptImportFingerprint,
@@ -15,16 +14,15 @@ import { uploadTitleFallback } from "../../services/uploadNotes";
 
 interface TranscriptImportPanelProps {
   folderId: number | null;
-  onNoteCreated?: (noteId: number, folderId: number | null) => void;
+  onNoteCreated?: (noteId: number, folderId: number | null, spaceId?: number) => void;
 }
 
-type ImportResult = { noteId: number; duplicate: boolean } | null;
-type PendingImportResult = NonNullable<ImportResult>;
-
-// A file picker can fire twice before React disables the button. Keep the
-// dedupe decision atomic within the renderer so a stale getNotes() snapshot
-// cannot create two notes from the same selected content.
-const pendingImports = new Map<string, Promise<PendingImportResult>>();
+type ImportResult = {
+  noteId: number;
+  folderId: number | null;
+  spaceId: number;
+  duplicate: boolean;
+} | null;
 
 export default function TranscriptImportPanel({
   folderId,
@@ -52,48 +50,24 @@ export default function TranscriptImportPanel({
       const source = await file.text();
       const parsed = parseTranscriptImport(file.name, source);
       const fingerprint = await transcriptImportFingerprint(source);
-      const prior = pendingImports.get(fingerprint);
-      if (prior) {
-        const completed = await prior;
-        setResult({ noteId: completed.noteId, duplicate: true });
-        return;
-      }
-
-      const persist = (async (): Promise<PendingImportResult> => {
-        const existing = findImportedTranscriptNote(
-          await window.electronAPI.getNotes("upload", 100000, null),
-          fingerprint
-        );
-        if (existing) return { noteId: existing.id, duplicate: true };
-
-        const title = parsed.title || uploadTitleFallback(parsed.text, file.name);
-        const saved = await window.electronAPI.saveNote(
-          title,
-          parsed.text,
-          "upload",
-          transcriptImportSource(file.name, fingerprint),
-          null,
-          folderId
-        );
-        if (!saved.success || !saved.note) throw new Error("saveFailed");
-
-        const updated = await window.electronAPI.updateNote(saved.note.id, {
-          transcript: serializeImportedTranscript(parsed.segments),
-        });
-        if (!updated.success) {
-          // A note without its imported transcript is not a successful import
-          // and would otherwise reserve this fingerprint on a later retry.
-          await window.electronAPI.deleteNote(saved.note.id).catch(() => {});
-          throw new Error("saveFailed");
-        }
-        return { noteId: saved.note.id, duplicate: false };
-      })();
-      pendingImports.set(fingerprint, persist);
-      try {
-        setResult(await persist);
-      } finally {
-        if (pendingImports.get(fingerprint) === persist) pendingImports.delete(fingerprint);
-      }
+      const title = parsed.title || uploadTitleFallback(parsed.text, file.name);
+      // The main-process transaction checks the fingerprint and writes the
+      // note plus transcript together, so concurrent picker events cannot
+      // reserve an empty note or create duplicate imports.
+      const saved = await window.electronAPI.saveTranscriptImportNote({
+        title,
+        content: parsed.text,
+        sourceFile: transcriptImportSource(file.name, fingerprint),
+        transcript: serializeImportedTranscript(parsed.segments),
+        folderId,
+      });
+      if (!saved.success || !saved.note) throw new Error("saveFailed");
+      setResult({
+        noteId: saved.note.id,
+        folderId: saved.note.folder_id ?? null,
+        spaceId: saved.note.space_id,
+        duplicate: saved.duplicate === true,
+      });
     } catch (cause) {
       if (cause instanceof TranscriptImportError) {
         setError(t(`notes.upload.import${cause.code[0].toUpperCase()}${cause.code.slice(1)}`));
@@ -141,7 +115,7 @@ export default function TranscriptImportPanel({
             <button
               type="button"
               className="font-medium text-primary hover:underline"
-              onClick={() => onNoteCreated(result.noteId, folderId)}
+              onClick={() => onNoteCreated(result.noteId, result.folderId, result.spaceId)}
             >
               {t("notes.upload.openNote")}
             </button>

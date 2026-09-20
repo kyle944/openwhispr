@@ -5,6 +5,44 @@ const { SpeculativeCleanupScheduler } = require("../../src/helpers/speculativeCl
 const wait = (ms = 8) => new Promise((resolve) => setTimeout(resolve, ms));
 const quietLogger = { debug() {} };
 
+test("raw whitespace remains part of speculative input identity", async (t) => {
+  const scheduler = createScheduler();
+  t.after(() => scheduler.cancel());
+  const prepared = [];
+  const inputs = [];
+  scheduler.startSession({
+    enabled: true,
+    prepare: (text) => {
+      prepared.push(text);
+      return {
+        key: JSON.stringify(text),
+        run: async () => {
+          inputs.push(text);
+          return text;
+        },
+      };
+    },
+  });
+  scheduler.update("same final transcript");
+  await wait();
+  scheduler.update("same final transcript ");
+  await wait();
+  let foregroundCalls = 0;
+  assert.equal(
+    await scheduler.finalize({
+      key: JSON.stringify("same final transcript "),
+      run: () => {
+        foregroundCalls += 1;
+        return "foreground";
+      },
+    }),
+    "same final transcript "
+  );
+  assert.equal(foregroundCalls, 0);
+  assert.deepEqual(prepared, ["same final transcript", "same final transcript "]);
+  assert.deepEqual(inputs, prepared);
+});
+
 function abortError() {
   const error = new Error("aborted");
   error.name = "AbortError";

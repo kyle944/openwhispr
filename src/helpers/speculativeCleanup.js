@@ -52,10 +52,11 @@ class SpeculativeCleanupScheduler {
   update(text) {
     if (!this.enabled || typeof text !== "string") return false;
 
-    const snapshot = text.trim();
-    const wordCount = snapshot ? snapshot.split(/\s+/u).length : 0;
+    const snapshot = text;
+    const eligibilityText = snapshot.trim();
+    const wordCount = eligibilityText ? eligibilityText.split(/\s+/u).length : 0;
 
-    if (snapshot.length < this.minCharacters || wordCount < this.minWords) {
+    if (eligibilityText.length < this.minCharacters || wordCount < this.minWords) {
       this.revision += 1;
       this._clearTimer();
       this.pending = null;

@@ -2899,7 +2899,7 @@
       "urlYoutubeBlocked": "YouTube 暂时阻止了来自您网络的下载。请稍后重试。",
       "customEndpointInvalid": "自定义转写端点未配置或无效。请在设置中更新。",
       "importTranscript": "导入转录",
-      "importDescription": "TXT、Markdown、SRT、VTT 或 JSON · 最大 10 MB · 保留在此设备上",
+      "importDescription": "TXT、Markdown、SRT、VTT 或 JSON · 最大 10 MB · 在本地解析，并遵循此位置的备份和共享设置",
       "importChooseFile": "选择转录文件",
       "importing": "正在导入...",
       "importComplete": "转录已导入",

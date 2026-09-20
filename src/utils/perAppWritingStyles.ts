@@ -6,6 +6,8 @@ import {
   type CleanupTone,
   type WritingPreferences,
 } from "./writingPreferences";
+import type { Platform } from "./platform";
+import type { InferenceMode } from "../types/electron";
 
 export interface DictationTargetApp {
   bundleId: string;
@@ -20,6 +22,16 @@ export interface PerAppWritingStyle extends DictationTargetApp {
 const MAX_STORED_APPS = 50;
 const MAX_BUNDLE_ID_LENGTH = 255;
 const MAX_APP_NAME_LENGTH = 120;
+
+export type PerAppWritingStylesSurface = "hidden" | "available" | "unavailable";
+
+export function resolvePerAppWritingStylesSurface(
+  platform: Platform,
+  cleanupMode: InferenceMode
+): PerAppWritingStylesSurface {
+  if (platform !== "darwin") return "hidden";
+  return cleanupMode === "local" ? "available" : "unavailable";
+}
 
 function normalizeLabel(value: unknown, maxLength: number): string {
   if (typeof value !== "string") return "";

@@ -46,7 +46,14 @@ async function loadRoute(t) {
       `,
     },
   });
-  return (await vite.ssrLoadModule("/helpers/audioManager.js")).resolveReasoningRoute;
+  const resolveReasoningRoute = (await vite.ssrLoadModule("/helpers/audioManager.js"))
+    .resolveReasoningRoute;
+  return (...args) => {
+    // resolvePrompt reads the hydrated store just like production. Keep that
+    // store aligned with the explicit route snapshot supplied by each case.
+    globalThis[settingsKey] = args[1];
+    return resolveReasoningRoute(...args);
+  };
 }
 
 function settings(cleanupIntensity) {
@@ -137,6 +144,12 @@ test("hosted cleanup keeps its existing prompt path without per-app metadata", a
       },
     ],
   };
+  Object.defineProperty(configured, "customPrompts", {
+    configurable: true,
+    get() {
+      throw new Error("hosted routing must not build a renderer cleanup prompt");
+    },
+  });
 
   const route = resolveReasoningRoute(
     "draft this",

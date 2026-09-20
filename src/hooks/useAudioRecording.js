@@ -19,7 +19,7 @@ import {
 } from "../utils/transcriptionPreview";
 import { canStartDictation } from "../utils/dictationReadiness";
 import { waitForVisualFrames } from "../utils/visualFrame";
-import { decideSpokenEnter } from "../utils/spokenEnter";
+import { applySpokenEnterDirective } from "../utils/spokenEnter";
 import { getCachedPlatform } from "../utils/platform";
 
 // Maps a failed selection-replacement code to its `selectionEditing.*` toast
@@ -445,12 +445,26 @@ export const useAudioRecording = (toast, options = {}) => {
       onTranscriptionComplete: async (result) => {
         if (result.success) {
           dismissDictationError?.();
-          const spokenEnter = decideSpokenEnter(result.text || "", {
-            enabled: getSettings().spokenEnterEnabled && getCachedPlatform() === "darwin",
-            routeKind: result.routeKind,
-            assistantConversation: !!result.assistantConversation,
-            selectionEdit: !!result.selectionEdit?.sessionId,
-          });
+          const { autoPasteEnabled, keepTranscriptionInClipboard } = getSettings();
+          // The onboarding demo consumes its transcript in its own textarea;
+          // it never reaches the native paste boundary.
+          const onboardingDemoActive = localStorage.getItem("onboardingCompleted") !== "true";
+          const spokenEnter = applySpokenEnterDirective(
+            result.rawText ?? result.text ?? "",
+            result.text || "",
+            {
+              enabled:
+                autoPasteEnabled &&
+                !onboardingDemoActive &&
+                getSettings().spokenEnterEnabled &&
+                getCachedPlatform() === "darwin",
+              routeKind: result.routeKind,
+              assistantConversation: !!result.assistantConversation,
+              selectionEdit: !!result.selectionEdit?.sessionId,
+              translationRequested: !!result.translationRequested,
+              voiceAgentRequested: !!result.voiceAgentRequested,
+            }
+          );
           // Keep rawText intact for history; only the terminal directive is
           // removed from the user-visible and pasted final transcript.
           const finalResult =
@@ -506,7 +520,6 @@ export const useAudioRecording = (toast, options = {}) => {
           }
 
           const isStreaming = finalResult.source?.includes("streaming");
-          const { autoPasteEnabled, keepTranscriptionInClipboard } = getSettings();
           let pasteSucceeded = true;
           let pasteSubmitted = false;
 

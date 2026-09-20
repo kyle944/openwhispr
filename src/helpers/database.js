@@ -2051,6 +2051,67 @@ class DatabaseManager {
     }
   }
 
+  /**
+   * Store a local transcript import as one transaction. The source_file value is
+   * an import fingerprint namespace, not an audio path; it is only used to
+   * identify an already-imported file.
+   */
+  saveTranscriptImportNote({
+    title,
+    content,
+    sourceFile,
+    transcript,
+    folderId = null,
+    spaceId = null,
+  }) {
+    try {
+      if (!this.db) throw new Error("Database not initialized");
+      const sourceMatch = sourceFile?.match(/^transcript-import:v1:([a-f0-9]{64}):/);
+      if (!sourceMatch) {
+        throw new Error("Invalid transcript import source");
+      }
+      const sourcePrefix = `transcript-import:v1:${sourceMatch[1]}:`;
+      if (typeof transcript !== "string" || !transcript.trim()) {
+        throw new Error("Invalid transcript import payload");
+      }
+
+      return this.db
+        .transaction(() => {
+          const duplicate = this.db
+            .prepare("SELECT * FROM notes WHERE source_file LIKE ? AND deleted_at IS NULL LIMIT 1")
+            .get(`${sourcePrefix}%`);
+          if (duplicate) return { success: true, note: duplicate, duplicate: true };
+
+          if (folderId) {
+            const folder = this.db
+              .prepare("SELECT space_id FROM folders WHERE id = ?")
+              .get(folderId);
+            spaceId = folder?.space_id ?? spaceId ?? this.getPrivateSpaceId();
+          } else {
+            if (spaceId == null) spaceId = this.getPrivateSpaceId();
+            const defaultFolder = this.db
+              .prepare("SELECT id FROM folders WHERE name = ? AND is_default = 1 AND space_id = ?")
+              .get("Personal", spaceId);
+            folderId = defaultFolder?.id || null;
+          }
+
+          const result = this.db
+            .prepare(
+              "INSERT INTO notes (title, content, note_type, source_file, transcript, folder_id, space_id, client_note_id) VALUES (?, ?, 'upload', ?, ?, ?, ?, ?)"
+            )
+            .run(title, content, sourceFile, transcript, folderId, spaceId, randomUUID());
+          const note = this.db
+            .prepare("SELECT * FROM notes WHERE id = ?")
+            .get(result.lastInsertRowid);
+          return { success: true, note, duplicate: false };
+        })
+        .immediate();
+    } catch (error) {
+      debugLogger.error("Error saving transcript import", { error: error.message }, "notes");
+      throw error;
+    }
+  }
+
   getNote(id) {
     try {
       if (!this.db) {

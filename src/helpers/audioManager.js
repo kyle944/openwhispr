@@ -181,19 +181,27 @@ function resolveReasoningRoute(
 ) {
   const cleanup = selectResolvedLLMConfig(settings, "dictationCleanup");
   const localCleanup = cleanup.mode === "local";
-  const effectiveWritingPreferences = resolvePerAppWritingPreferences(
-    settings,
-    settings.perAppWritingStyles,
-    localCleanup ? dictationTargetApp : null
-  );
-  const cleanupSystemPrompt = getCleanupSystemPrompt(
-    agentName,
-    getDictionaryHintWords(settings),
-    resolveCleanupLanguage(settings.preferredLanguage),
-    settings.uiLanguage,
-    effectiveWritingPreferences
-  );
-  const cleanupFormattingFingerprint = getCleanupFormattingFingerprint(effectiveWritingPreferences);
+  let localCleanupIdentity = null;
+  const getLocalCleanupIdentity = () => {
+    if (!localCleanup) return null;
+    if (localCleanupIdentity) return localCleanupIdentity;
+    const effectiveWritingPreferences = resolvePerAppWritingPreferences(
+      settings,
+      settings.perAppWritingStyles,
+      dictationTargetApp
+    );
+    localCleanupIdentity = {
+      systemPrompt: getCleanupSystemPrompt(
+        agentName,
+        getDictionaryHintWords(settings),
+        resolveCleanupLanguage(settings.preferredLanguage),
+        settings.uiLanguage,
+        effectiveWritingPreferences
+      ),
+      speculativeCleanupCacheKey: getCleanupFormattingFingerprint(effectiveWritingPreferences),
+    };
+    return localCleanupIdentity;
+  };
   const cleanupEnabled = settings.cleanupIntensity !== "none";
   const cleanupReachable =
     cleanupEnabled &&
@@ -240,6 +248,7 @@ function resolveReasoningRoute(
     );
   }
   if (kind === "translation") {
+    const cleanupIdentity = getLocalCleanupIdentity();
     return {
       kind: "translation",
       model: translation.model,
@@ -247,12 +256,7 @@ function resolveReasoningRoute(
       cleanupConfig: {
         inferenceScope: /** @type {const} */ ("dictationCleanup"),
         disableThinking: settings.cleanupDisableThinking,
-        ...(localCleanup
-          ? {
-              systemPrompt: cleanupSystemPrompt,
-              speculativeCleanupCacheKey: cleanupFormattingFingerprint,
-            }
-          : {}),
+        ...(cleanupIdentity || {}),
       },
       config: {
         ...translation.config,
@@ -307,17 +311,13 @@ function resolveReasoningRoute(
     };
   }
   if (kind === "cleanup") {
+    const cleanupIdentity = getLocalCleanupIdentity();
     return {
       kind: "cleanup",
       config: {
         inferenceScope: /** @type {const} */ ("dictationCleanup"),
         disableThinking: settings.cleanupDisableThinking,
-        ...(localCleanup
-          ? {
-              systemPrompt: cleanupSystemPrompt,
-              speculativeCleanupCacheKey: cleanupFormattingFingerprint,
-            }
-          : {}),
+        ...(cleanupIdentity || {}),
       },
     };
   }
@@ -2555,6 +2555,8 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
         ? { assistantConversation: this.pendingAssistantConversation }
         : {}),
       ...(this.pendingSelectionEdit ? { selectionEdit: this.pendingSelectionEdit } : {}),
+      ...(this.translationRequested ? { translationRequested: true } : {}),
+      ...(this.voiceAgentRequested ? { voiceAgentRequested: true } : {}),
     };
     this.pendingAssistantConversation = null;
     this.pendingSelectionEdit = null;
@@ -3761,6 +3763,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
               return {
                 success: true,
                 text,
+                rawText: result.text,
                 source: "local-fallback",
                 routeKind: processed.routeKind,
               };
@@ -4865,6 +4868,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
     // snapshot the pre-reasoning transcript now to report as `rawText` — matching
     // the batch path, which already keeps raw and processed text separate.
     const rawStreamingText = finalText;
+    let rawFinalText = rawStreamingText;
 
     let usedCloudReasoning = false;
     let routeKind = "skip";
@@ -5051,6 +5055,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
           if (wasCancelled()) return true;
           if (batchResult?.text) {
             finalText = batchResult.text;
+            rawFinalText = batchResult.rawText ?? batchResult.text;
             routeKind = batchResult.routeKind || "skip";
             usedBatchFallback = true;
             batchWarning = batchResult.warning || null;
@@ -5087,7 +5092,7 @@ registerProcessor("pcm-streaming-processor", PCMStreamingProcessor);
       this.onTranscriptionComplete?.({
         success: true,
         text: finalText,
-        rawText: rawStreamingText || finalText,
+        rawText: rawFinalText || finalText,
         source: `${this.getStreamingProviderName()}-streaming`,
         routeKind,
         ...this._takePendingResultExtras(),

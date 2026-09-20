@@ -63,6 +63,7 @@ import { eligibleGpuOffers, type GpuOffers } from "../utils/gpuBannerPolicy";
 import {
   setActiveNoteId,
   setActiveFolderId,
+  setActiveContext,
   navigateToContainer,
   useActiveNoteId,
   initializeNotes,
@@ -1231,9 +1232,11 @@ export default function ControlPanel({ initialSettingsSection }: ControlPanelPro
             {activeView === "upload" && policyActionsAllowed && (
               <Suspense fallback={null}>
                 <UploadAudioView
-                  onNoteCreated={(noteId, folderId) => {
+                  onNoteCreated={(noteId, folderId, spaceId) => {
+                    if (spaceId != null && folderId != null) setActiveContext(spaceId, folderId);
+                    else if (spaceId != null) navigateToContainer(spaceId, null);
+                    else if (folderId != null) setActiveFolderId(folderId);
                     setActiveNoteId(noteId);
-                    if (folderId) setActiveFolderId(folderId);
                     setActiveView("personal-notes");
                   }}
                   onOpenSettings={(section) => {

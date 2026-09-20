@@ -3110,7 +3110,7 @@
       "urlYoutubeBlocked": "YouTube blockiert Downloads aus Ihrem Netzwerk vorübergehend. Versuchen Sie es später erneut.",
       "customEndpointInvalid": "Benutzerdefinierter Transkriptionsendpunkt ist nicht konfiguriert oder ungültig. Aktualisieren Sie ihn in den Einstellungen.",
       "importTranscript": "Transkript importieren",
-      "importDescription": "TXT, Markdown, SRT, VTT oder JSON · bis zu 10 MB · bleibt auf diesem Gerät",
+      "importDescription": "TXT, Markdown, SRT, VTT oder JSON · bis zu 10 MB · lokal verarbeitet; folgt den Sicherungs- und Freigabeeinstellungen dieses Ziels",
       "importChooseFile": "Transkriptdatei auswählen",
       "importing": "Importieren...",
       "importComplete": "Transkript importiert",

@@ -186,7 +186,7 @@ test("a last quiet word flushes before capture release and recognizer finish", a
     },
     _previewFlushResolvers: flushResolvers,
   });
-  window.electronAPI.stopDictationPreview = () => {
+  globalThis.window.electronAPI.stopDictationPreview = () => {
     events.push("recognizer-finish");
     return Promise.resolve({ success: true });
   };
@@ -225,7 +225,7 @@ test("overlapping preview cleanups resolve only for their own worklet", async (t
   const manager = Object.assign(Object.create(AudioManager.prototype), {
     _previewFlushResolvers: flushResolvers,
   });
-  window.electronAPI.stopDictationPreview = async () => ({ success: true });
+  globalThis.window.electronAPI.stopDictationPreview = async () => ({ success: true });
 
   const processorA = createProcessor("A");
   manager._previewProcessor = processorA;
