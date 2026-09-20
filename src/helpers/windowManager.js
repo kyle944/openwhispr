@@ -1237,8 +1237,8 @@ class WindowManager {
 
   // The display the user is working on is the one showing the app being dictated
   // into, which on a multi-monitor desk is often not the one the mouse rests on.
-  // Falls back to the cursor when the target has no readable window (non-macOS,
-  // no target captured yet, or an app with no ordinary window).
+  // Placement itself is always that display's bottom-right, not the target
+  // window's edge (a half-screen column would park the tile mid-laptop).
   async _resolveActiveDisplay(targetPidPromise) {
     let pid = this.textEditMonitor?.lastTargetPid;
     if (targetPidPromise) {
@@ -1248,57 +1248,49 @@ class WindowManager {
         pid = null;
       }
     }
-    const bounds = pid ? await this.textEditMonitor.getTargetWindowBounds(pid) : null;
-    return bounds
-      ? screen.getDisplayMatching(bounds)
+    const targetBounds = pid ? await this.textEditMonitor.getTargetWindowBounds(pid) : null;
+    const display = targetBounds
+      ? screen.getDisplayMatching(targetBounds)
       : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+    return { display };
   }
 
   _repositionToActiveDisplay(targetPidPromise) {
     return this._mainWindowPlacementCoordinator.request(
       () => this._resolveActiveDisplay(targetPidPromise),
-      (activeDisplay, isCurrent) =>
+      (placement, isCurrent) =>
         this._enqueueMainWindowMutation(() =>
-          this._performActiveDisplayReposition(activeDisplay, isCurrent)
+          this._performActiveDisplayReposition(placement, isCurrent)
         )
     );
   }
 
-  _performActiveDisplayReposition(activeDisplay, isCurrent) {
+  _performActiveDisplayReposition(placement, isCurrent) {
+    const activeDisplay = placement?.display;
     if (
       !isCurrent() ||
       this.dragManager.isDragActive() ||
       !this.mainWindow ||
-      this.mainWindow.isDestroyed()
+      this.mainWindow.isDestroyed() ||
+      !activeDisplay
     ) {
       return { applied: false, reason: "superseded" };
     }
 
     const currentBounds = this.mainWindow.getBounds();
-    const currentDisplay = this._getMainWindowDisplayFor(currentBounds);
-
-    if (currentDisplay.id === activeDisplay.id) {
-      // Nearest-display math can't tell "on this display" from "just past its
-      // edge", so a rearranged monitor or a drag that ended over another
-      // display can leave the panel stranded in dead space, looking like the
-      // overlay vanished. Pull it back before showing it.
-      const clamped = WindowPositionUtil.clampToWorkArea(currentBounds, currentDisplay);
-      if (clamped.x !== currentBounds.x || clamped.y !== currentBounds.y) {
-        const clampedBounds = { ...currentBounds, ...clamped };
-        this._clearRendererResizeMask();
-        this.mainWindow.setBounds(clampedBounds);
-        this._lastResizeBounds = { ...clampedBounds };
-        this._baseBoundsBeforeResize = null;
-        return { applied: true, bounds: clampedBounds };
-      }
-      return { applied: false, reason: "same-display" };
-    }
-
     const newPos = WindowPositionUtil.getMainWindowPosition(
       activeDisplay,
       { width: currentBounds.width, height: currentBounds.height },
       this._panelStartPosition
     );
+    if (
+      currentBounds.x === newPos.x &&
+      currentBounds.y === newPos.y &&
+      currentBounds.width === newPos.width &&
+      currentBounds.height === newPos.height
+    ) {
+      return { applied: false, reason: "unchanged" };
+    }
     debugLogger.debug(
       "[WindowManager] Moving dictation panel to the active display",
       { from: currentBounds, to: newPos, displayId: activeDisplay.id },

@@ -15,12 +15,34 @@ export function resolveLiveTranscriptSurfaceHeightCap(availableHeight) {
 
 // The pill's two rendered footprints (px). This is a real cross-process
 // contract: WINDOW_SIZES.RECORDING in src/helpers/windowConfig.js sizes the
-// native overlay window around the compact recording pill, so these values
-// and that window size may only change together.
+// native overlay window around the compact recording pill plus its close
+// control, so these values and that window size may only change together.
 export const VOICE_PILL_FOOTPRINT = Object.freeze({
   idle: Object.freeze({ width: 40, height: 40 }),
   recording: Object.freeze({ width: 92, height: 36 }),
 });
+
+// size-7 close control plus the gap-2 that sits between it and the pill.
+export const VOICE_PILL_CANCEL_FOOTPRINT = Object.freeze({
+  size: 28,
+  gap: 8,
+});
+
+export const LIVE_TRANSCRIPT_FINAL_HIDE_MS = 2000;
+
+export function resolveVoicePillRecordingClusterWidth(
+  footprint = VOICE_PILL_FOOTPRINT,
+  cancel = VOICE_PILL_CANCEL_FOOTPRINT
+) {
+  return footprint.recording.width + cancel.gap + cancel.size;
+}
+
+export function resolveVoicePillClusterOrder({ liveTranscriptMounted, horizontalDirection }) {
+  // Right-origin tiles keep the waveform on the growth edge. The X tucks
+  // inward so it lives in the footer instead of hanging off the window.
+  if (liveTranscriptMounted && horizontalDirection === "right") return "inward";
+  return "trailing";
+}
 
 export const LISTENING_ENTRANCE_TIMING = Object.freeze({
   // Give the Beam enough time to read as an intentional thinking state before
@@ -168,10 +190,7 @@ export function resolveVoicePillDock({
   horizontalDirection = resolveVoiceHorizontalDirection(panelStartPosition),
 }) {
   if (liveTranscriptOpen) {
-    // The transcript surface grows around the control. The control itself
-    // never leaves the resting screen-edge anchor, so the circle, waveform,
-    // and repeated sessions all begin and end at exactly the same point.
-    return `bottom-${horizontalDirection}`;
+    return `live-transcript-bottom-${horizontalDirection}`;
   }
   if (assistantOpen) return `assistant-bottom-${horizontalDirection}`;
   if (panelStartPosition === "center") return "center";
@@ -344,9 +363,9 @@ export function resolveVoicePillInteraction({
   const active = Boolean(isRecording) || Boolean(isProcessing);
   return {
     pillInteractive: !liveTranscriptMounted || Boolean(isRecording),
-    // Live Transcript always shows its discard control; the bare pill shows
-    // it on hover so a stalled processing step can still be cancelled.
-    cancelVisible: active && (Boolean(liveTranscriptMounted) || Boolean(isHovered)),
+    // The tile always hosts its close control. The bare pill shows it on
+    // hover so a stalled processing step can still be cancelled.
+    cancelVisible: Boolean(liveTranscriptMounted) || (active && Boolean(isHovered)),
   };
 }
 

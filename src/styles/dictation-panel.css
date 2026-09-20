@@ -52,8 +52,17 @@
   --live-transcript-speaking-pill-width: 5.75rem;
   --live-transcript-speaking-pill-height: 2.25rem;
   --live-transcript-footer-inline-padding: 1rem;
+  --live-transcript-cancel-size: 1.75rem;
+  --live-transcript-cancel-gap: 0.5rem;
+  --live-transcript-footer-cluster-width: calc(
+    var(--live-transcript-speaking-pill-width) + var(--live-transcript-cancel-gap) +
+      var(--live-transcript-cancel-size)
+  );
+  --live-transcript-footer-cluster-reserve: calc(
+    var(--live-transcript-footer-cluster-width) + var(--live-transcript-footer-inline-padding)
+  );
   --live-transcript-encapsulated-width: calc(
-    var(--live-transcript-speaking-pill-width) + var(--live-transcript-footer-inline-padding) +
+    var(--live-transcript-footer-cluster-width) + var(--live-transcript-footer-inline-padding) +
       var(--live-transcript-footer-inline-padding)
   );
   transition:

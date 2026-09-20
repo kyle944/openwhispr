@@ -18,6 +18,7 @@ interface LiveTranscriptPanelProps {
   contentVisible: boolean;
   onCollapse: () => void;
   onHoldChange?: (held: boolean) => void;
+  horizontalDirection?: "left" | "right";
 }
 
 const COPIED_RESET_MS = 1600;
@@ -31,6 +32,7 @@ export function LiveTranscriptPanel({
   contentVisible,
   onCollapse,
   onHoldChange,
+  horizontalDirection = "right",
 }: LiveTranscriptPanelProps) {
   const { t } = useTranslation();
   const visibleText = resolveLiveTranscriptVisibleText({ text });
@@ -84,7 +86,12 @@ export function LiveTranscriptPanel({
       </main>
 
       <footer
-        className="flex h-12 shrink-0 items-center justify-between gap-3 px-4"
+        className={`flex h-12 shrink-0 items-center gap-3 px-4 ${
+          horizontalDirection === "left"
+            ? "justify-end pl-[var(--live-transcript-footer-cluster-reserve)]"
+            : "justify-start pr-[var(--live-transcript-footer-cluster-reserve)]"
+        }`}
+        data-footer-cluster-side={horizontalDirection}
         onMouseEnter={() => onHoldChange?.(true)}
         onMouseLeave={() => onHoldChange?.(false)}
       >
@@ -119,16 +126,20 @@ export function LiveTranscriptPanel({
               {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
             </button>
           )}
-          <button
-            type="button"
-            onClick={onCollapse}
-            disabled={!controlsVisible}
-            tabIndex={controlsVisible ? 0 : -1}
-            className="inline-flex size-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground disabled:pointer-events-none"
-            aria-label={t("transcriptionPreview.collapse", { defaultValue: "Collapse transcript" })}
-          >
-            <ChevronDown className="size-4" />
-          </button>
+          {!isReady && (
+            <button
+              type="button"
+              onClick={onCollapse}
+              disabled={!controlsVisible}
+              tabIndex={controlsVisible ? 0 : -1}
+              className="inline-flex size-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-surface-2 hover:text-foreground disabled:pointer-events-none"
+              aria-label={t("transcriptionPreview.collapse", {
+                defaultValue: "Collapse transcript",
+              })}
+            >
+              <ChevronDown className="size-4" />
+            </button>
+          )}
         </div>
       </footer>
 

@@ -88,6 +88,19 @@ test("a window larger than its display is pinned to the work area origin", () =>
   assert.equal(position.y, 25);
 });
 
+const LAPTOP_FULL = { workArea: { x: 0, y: 33, width: 1728, height: 1084 } };
+
+test("bottom-right is the display corner, not a half-screen window's edge", () => {
+  const position = WindowPositionUtil.getMainWindowPosition(
+    LAPTOP_FULL,
+    { width: 160, height: 96 },
+    "bottom-right"
+  );
+
+  assert.equal(position.x, 1728 - 160 - 4);
+  assert.equal(position.y, 33 + 1084 - 96 - 4);
+});
+
 test("clamps against negative-origin displays and falls back to bounds", () => {
   const external = { bounds: { x: -451, y: -1440, width: 2560, height: 1440 } };
   assert.deepEqual(

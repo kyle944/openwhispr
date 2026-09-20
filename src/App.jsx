@@ -34,6 +34,7 @@ import {
   resolveVoiceActivityPresentation,
   resolveVoiceHorizontalDirection,
   resolveVoicePanelCorePresentation,
+  resolveVoicePillClusterOrder,
   resolveVoicePillDock,
   resolveVoicePillInteraction,
   isVoicePillActivationKey,
@@ -524,6 +525,10 @@ export default function App() {
     panelStartPosition,
     horizontalDirection: voiceHorizontalDirection,
   });
+  const voicePillClusterOrder = resolveVoicePillClusterOrder({
+    liveTranscriptMounted: liveTranscript.mounted,
+    horizontalDirection: voiceHorizontalDirection,
+  });
   const voicePillTravelDuration =
     liveTranscript.open && liveTranscript.entrancePhase === "encapsulate"
       ? LIVE_TRANSCRIPT_ENTRANCE_TIMING.encapsulateMs
@@ -552,9 +557,12 @@ export default function App() {
         aria-hidden={pillVisuallySuppressed || undefined}
       >
         <div
-          className="assistant-pill-presence relative flex items-center gap-2"
+          className={`assistant-pill-presence relative flex items-center gap-2 ${
+            voicePillClusterOrder === "inward" ? "flex-row-reverse" : ""
+          }`}
           data-assistant-footer-phase={assistant.open ? assistant.footerPhase : undefined}
           data-horizontal-direction={voiceHorizontalDirection}
+          data-cluster-order={voicePillClusterOrder}
           style={{
             "--assistant-pill-retreat-duration": `${ASSISTANT_FOOTER_TRANSITION_TIMING.pillRetreatMs}ms`,
             "--assistant-pill-entrance-duration": `${ASSISTANT_FOOTER_TRANSITION_TIMING.pillEntranceMs}ms`,
@@ -588,7 +596,7 @@ export default function App() {
               beamActive={listeningEntrance.beamActive ?? undefined}
               waveformVisible={listeningEntrance.waveformVisible}
               waveformOnlyWhileRecording={anyPanelMounted}
-              integratedWithPanel={false}
+              integratedWithPanel={liveTranscript.mounted}
               agentMode={agentModeActive}
               beamTheme={beamTheme}
               showExpandChevron={canReopenLiveTranscript && isHovered}
@@ -657,14 +665,19 @@ export default function App() {
             <button
               type="button"
               aria-label={
-                isRecording ? t("app.buttons.cancelRecording") : t("app.buttons.cancelProcessing")
+                isRecording
+                  ? t("app.buttons.cancelRecording")
+                  : isVisuallyProcessing
+                    ? t("app.buttons.cancelProcessing")
+                    : t("transcriptionPreview.collapse", { defaultValue: "Collapse transcript" })
               }
               onMouseDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
                 if (isRecording) cancelRecording();
-                else cancelProcessing();
+                else if (isVisuallyProcessing) cancelProcessing();
+                else liveTranscript.close({ clear: true });
               }}
               className="flex size-7 shrink-0 items-center justify-center rounded-full border border-border/55 bg-surface-2 text-muted-foreground shadow-sm transition-colors hover:bg-surface-3 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
             >
@@ -748,6 +761,7 @@ export default function App() {
             contentVisible={liveTranscript.mounted && liveTranscriptEntrance.contentVisible}
             onCollapse={() => liveTranscript.close({ suppress: true })}
             onHoldChange={liveTranscript.holdFinal}
+            horizontalDirection={voiceHorizontalDirection}
           />
         )}
       </VoiceModePanelCore>

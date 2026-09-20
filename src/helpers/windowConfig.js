@@ -133,7 +133,7 @@ function fitDictationErrorWindowToWorkArea(requestedSize, workArea) {
 
 const WINDOW_SIZES = {
   BASE: { width: 96, height: 96 },
-  RECORDING: { width: 128, height: 96 },
+  RECORDING: { width: 160, height: 96 },
   DICTATION_ERROR: { width: DICTATION_ERROR_WINDOW_LIMITS.width, height: 112 },
   DICTATION_ERROR_WITH_TRANSCRIPT: {
     width: DICTATION_ERROR_WINDOW_LIMITS.width,
@@ -303,7 +303,7 @@ class WindowPositionUtil {
       x = Math.round(workArea.x + (workArea.width - width) / 2);
       y = workArea.y + workArea.height - height - MARGIN;
     } else {
-      // bottom-right (default)
+      // bottom-right (default): the display corner, not the dictated window.
       x = workArea.x + workArea.width - width - MARGIN;
       y = workArea.y + workArea.height - height - MARGIN;
     }

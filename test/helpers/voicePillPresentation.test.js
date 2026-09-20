@@ -76,7 +76,7 @@ test("voice mode direction mirrors the right baseline only for bottom-left", asy
   assert.equal(resolveVoiceHorizontalDirection("center"), "right");
 });
 
-test("the speaking pill stays attached to the right edge through Live Transcript", async () => {
+test("the speaking pill sits in the Live Transcript footer instead of the screen edge", async () => {
   const { resolveVoicePillDock } = await load();
 
   assert.equal(
@@ -86,7 +86,7 @@ test("the speaking pill stays attached to the right edge through Live Transcript
       assistantOpen: false,
       panelStartPosition: "bottom-right",
     }),
-    "bottom-right"
+    "live-transcript-bottom-right"
   );
   assert.equal(
     resolveVoicePillDock({
@@ -95,7 +95,7 @@ test("the speaking pill stays attached to the right edge through Live Transcript
       assistantOpen: false,
       panelStartPosition: "bottom-right",
     }),
-    "bottom-right"
+    "live-transcript-bottom-right"
   );
   assert.equal(
     resolveVoicePillDock({
@@ -118,7 +118,7 @@ test("a left-origin session keeps the speaking pill left while surfaces grow rig
       assistantOpen: false,
       panelStartPosition: "bottom-left",
     }),
-    "bottom-left"
+    "live-transcript-bottom-left"
   );
   for (const liveTranscriptEntrancePhase of ["horizontal", "controls", "content"]) {
     assert.equal(
@@ -128,7 +128,7 @@ test("a left-origin session keeps the speaking pill left while surfaces grow rig
         assistantOpen: false,
         panelStartPosition: "bottom-left",
       }),
-      "bottom-left"
+      "live-transcript-bottom-left"
     );
   }
   assert.equal(
@@ -174,6 +174,15 @@ test("Live Transcript restores stop and cancel interactions without unlocking As
       liveTranscriptMounted: true,
       isRecording: false,
       isProcessing: true,
+    }),
+    { pillInteractive: false, cancelVisible: true }
+  );
+  assert.deepEqual(
+    resolveVoicePillInteraction({
+      assistantMounted: false,
+      liveTranscriptMounted: true,
+      isRecording: false,
+      isProcessing: false,
     }),
     { pillInteractive: false, cancelVisible: true }
   );
@@ -238,6 +247,37 @@ test("the interactive pill recognizes standard keyboard activation keys", async 
   assert.equal(isVoicePillActivationKey("Enter"), true);
   assert.equal(isVoicePillActivationKey(" "), true);
   assert.equal(isVoicePillActivationKey("Escape"), false);
+});
+
+test("a right-origin Live Transcript tucks the close control inward of the waveform", async () => {
+  const { resolveVoicePillClusterOrder } = await load();
+
+  assert.equal(
+    resolveVoicePillClusterOrder({
+      liveTranscriptMounted: true,
+      horizontalDirection: "right",
+    }),
+    "inward"
+  );
+  assert.equal(
+    resolveVoicePillClusterOrder({
+      liveTranscriptMounted: true,
+      horizontalDirection: "left",
+    }),
+    "trailing"
+  );
+  assert.equal(
+    resolveVoicePillClusterOrder({
+      liveTranscriptMounted: false,
+      horizontalDirection: "right",
+    }),
+    "trailing"
+  );
+});
+
+test("the finished transcript hold is short enough to copy, then dismisses", async () => {
+  const { LIVE_TRANSCRIPT_FINAL_HIDE_MS } = await load();
+  assert.equal(LIVE_TRANSCRIPT_FINAL_HIDE_MS, 2000);
 });
 
 test("a collapsed completed transcript leaves the normal pill interaction available", async () => {

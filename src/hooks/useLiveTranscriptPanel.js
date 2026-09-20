@@ -3,6 +3,7 @@ import { createLatestValueScheduler } from "../utils/latestValueScheduler";
 import {
   getLiveTranscriptEntranceTimeline,
   LIVE_TRANSCRIPT_ENTRANCE_TIMING,
+  LIVE_TRANSCRIPT_FINAL_HIDE_MS,
   LIVE_TRANSCRIPT_SURFACE_LIMITS,
   shouldOfferLiveTranscriptReopen,
 } from "../helpers/voicePillPresentation";
@@ -10,7 +11,6 @@ import {
 const LIVE_TRANSCRIPT_RENDER_INTERVAL_MS = 32;
 const LIVE_TRANSCRIPT_SHELL_GROW_MS = 60;
 const LIVE_TRANSCRIPT_CLOSE_UNMOUNT_MS = 320;
-const LIVE_TRANSCRIPT_FINAL_HIDE_MS = 4000;
 const LIVE_TRANSCRIPT_WORD_REVEAL_MS = 55;
 const LIVE_TRANSCRIPT_WORD_REVEAL_BACKLOG = 8;
 

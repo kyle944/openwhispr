@@ -4,7 +4,7 @@ const React = require("react");
 const { createRoot } = require("react-dom/client");
 const { createRendererServer, installBrowserGlobals } = require("../lib/rendererTestHarness");
 
-const FINAL_HIDE_MS = 4000;
+const FINAL_HIDE_MS = 2000;
 
 function installHookDom(t) {
   const originalDocument = globalThis.document;

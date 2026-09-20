@@ -3,13 +3,15 @@ const assert = require("node:assert/strict");
 
 const load = () => import("../../src/utils/windowSizeLadder.js");
 
-test("the recording window fits the compact listening pill footprint", async () => {
+test("the recording window fits the compact listening pill and its close control", async () => {
   const { WINDOW_SIZES } = require("../../src/helpers/windowConfig");
-  const { VOICE_PILL_FOOTPRINT } = await import("../../src/helpers/voicePillPresentation.js");
+  const { resolveVoicePillRecordingClusterWidth, VOICE_PILL_FOOTPRINT } = await import(
+    "../../src/helpers/voicePillPresentation.js"
+  );
 
-  // The RECORDING footprint exists to host the compact recording pill; the
-  // window must never shrink below what the pill renders.
-  assert.ok(WINDOW_SIZES.RECORDING.width >= VOICE_PILL_FOOTPRINT.recording.width);
+  // The RECORDING footprint hosts the compact pill plus the X. Those two
+  // used to share 128px and painted on top of each other.
+  assert.ok(WINDOW_SIZES.RECORDING.width >= resolveVoicePillRecordingClusterWidth() + 16);
   assert.ok(WINDOW_SIZES.RECORDING.height >= VOICE_PILL_FOOTPRINT.recording.height);
 });
 

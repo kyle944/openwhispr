@@ -332,10 +332,10 @@ class TextEditMonitor extends EventEmitter {
   }
 
   /**
-   * macOS: the target app's largest on-screen window rect, used to decide which
-   * display the user is working on. Resolves to null when the app has no
-   * ordinary window (or off macOS), leaving the caller to fall back to the
-   * cursor. Cached over the same press-time burst as captureTargetPid, so the
+   * macOS: the target app's on-screen window rect, used to pick which display
+   * the overlay should sit on. Resolves to null when the app has no ordinary
+   * window (or off macOS), leaving the caller to fall back to the cursor.
+   * Cached over the same press-time burst as captureTargetPid, so the
    * dictation panel and the screen-context capture share one spawn.
    */
   async getTargetWindowBounds(pid, timeoutMs = 700) {

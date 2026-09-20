@@ -227,6 +227,17 @@ test("the waveform uses foreground contrast, rounded caps, and a pronounced heig
   assert.ok(resolveWaveformBarHeight(0.15) > 20);
 });
 
+test("Live Transcript encapsulation includes the close control next to the waveform", () => {
+  const styles = readDictationStyles();
+
+  assert.match(styles, /--live-transcript-footer-cluster-reserve:/);
+  assert.match(styles, /--live-transcript-cancel-size:/);
+  assert.match(
+    styles,
+    /--live-transcript-encapsulated-width:\s*calc\(\s*var\(--live-transcript-footer-cluster-width\)/
+  );
+});
+
 test("Live Transcript hands visual border ownership to the shared panel", async () => {
   const integrated = await renderPill("recording", true, "right", {
     variant: "panel",

@@ -77,10 +77,24 @@ monitoredPid = targetPid
 if windowBoundsMode {
     let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
     let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] ?? []
-    // Largest window rather than frontmost: layer 0 still includes the full-width
-    // toolbar strips Arc-family browsers float above their content, and one of
-    // those spanning another display would name the wrong screen.
-    var best: (x: Int, y: Int, width: Int, height: Int, area: Double)?
+    // Layer 0 still includes the full-width toolbar strips Arc-family browsers
+    // float above their content. Drop those short chrome windows, then prefer
+    // the remaining window under the cursor (the one being dictated into) over
+    // the largest, so a narrow T3 Code column is not beaten by another window
+    // of the same app on the rest of the display.
+    struct WindowRect {
+        let x: Int
+        let y: Int
+        let width: Int
+        let height: Int
+        var area: Double { Double(width * height) }
+        func contains(_ point: CGPoint) -> Bool {
+            point.x >= Double(x) && point.x <= Double(x + width) &&
+                point.y >= Double(y) && point.y <= Double(y + height)
+        }
+    }
+
+    var candidates: [WindowRect] = []
     for window in windows {
         guard let ownerPid = window[kCGWindowOwnerPID as String] as? pid_t, ownerPid == targetPid,
               let layer = window[kCGWindowLayer as String] as? Int, layer == 0,
@@ -88,11 +102,19 @@ if windowBoundsMode {
               let x = bounds["X"] as? Double, let y = bounds["Y"] as? Double,
               let width = bounds["Width"] as? Double, let height = bounds["Height"] as? Double
         else { continue }
-        let area = width * height
-        if area > (best?.area ?? 0) {
-            best = (Int(x), Int(y), Int(width), Int(height), area)
-        }
+        candidates.append(WindowRect(x: Int(x), y: Int(y), width: Int(width), height: Int(height)))
     }
+
+    let minContentHeight = 80
+    let contentWindows = candidates.filter { $0.height >= minContentHeight }
+    let pool = contentWindows.isEmpty ? candidates : contentWindows
+
+    let cocoaCursor = NSEvent.mouseLocation
+    let primary = NSScreen.screens.first(where: { $0.frame.origin == .zero }) ?? NSScreen.screens.first
+    let primaryHeight = primary?.frame.height ?? 0
+    let cursor = CGPoint(x: cocoaCursor.x, y: primaryHeight - cocoaCursor.y)
+
+    let best = pool.first(where: { $0.contains(cursor) }) ?? pool.max(by: { $0.area < $1.area })
 
     guard let window = best else {
         writeOutput("NO_WINDOW")
